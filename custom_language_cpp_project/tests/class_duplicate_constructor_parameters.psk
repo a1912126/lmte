@@ -1,0 +1,7 @@
+define class Holder {
+    public define constructor {integer value, integer value} {
+        say value
+    }
+}
+
+Initialize Holder holder with (1, 2)

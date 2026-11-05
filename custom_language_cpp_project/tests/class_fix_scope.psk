@@ -1,0 +1,19 @@
+define class Holder {
+    public define function lockLocal() returning nothing {
+        initialize integer temp
+        fix temp
+    }
+
+    public define function changeLocal() returning nothing {
+        initialize integer temp
+        set temp to 3
+        say temp
+    }
+}
+
+initialize integer temp
+set temp to 1
+Initialize Holder holder
+call lockLocal() from holder
+call changeLocal() from holder
+say temp

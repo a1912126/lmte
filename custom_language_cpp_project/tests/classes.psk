@@ -1,3 +1,9 @@
+define function replacementName() returning string {
+    initialize string temporaryName
+    set temporaryName to "Rex"
+    return temporaryName
+}
+
 abstract define class Animal {
     public initialize string name
     public abstract define function speak() returning nothing
@@ -12,10 +18,14 @@ define class Dog inherits Animal {
     public define function speak() returning nothing {
         say "Dog Noise"
     }
+    public define function introduce(string updatedName) returning nothing {
+        say name
+        set name to updatedName
+    }
 }
 
 Initialize Dog pike with ("Pike", 1)
 call speak() from pike
 say name of pike
-set name of pike to "Rex"
+call introduce(replacementName()) from pike
 say name of pike

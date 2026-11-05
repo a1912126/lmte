@@ -1,12 +1,30 @@
 #include "ir_generator.hpp"
 
+namespace {
+std::string quoteString(const std::string& value) {
+    std::string quoted = "\"";
+    for (char character : value) {
+        switch (character) {
+            case '\\': quoted += "\\\\"; break;
+            case '"': quoted += "\\\""; break;
+            case '\n': quoted += "\\n"; break;
+            case '\r': quoted += "\\r"; break;
+            case '\t': quoted += "\\t"; break;
+            default: quoted += character; break;
+        }
+    }
+    quoted += '"';
+    return quoted;
+}
+}
+
 std::string IRGenerator::nextTemp() { return "%t" + std::to_string(++temp); }
 std::string IRGenerator::nextLabel(const std::string& prefix) { return prefix + std::to_string(++label); }
 
 std::string IRGenerator::expr(const Expr* e) {
     if (auto* literal = dynamic_cast<const LiteralExpr*>(e)) {
         if (literal->value.type == ValueType::String) {
-            return "\"" + literal->value.s + "\"";
+            return quoteString(literal->value.s);
         }
         return literal->value.toString();
     }
@@ -157,6 +175,16 @@ void IRGenerator::stmt(const Stmt* s) {
         for (std::size_t i = 0; i < call->arguments.size(); ++i) {
             if (i != 0) line += ", ";
             line += expr(call->arguments[i].get());
+        }
+        lines.push_back(line + ")");
+        return;
+    }
+
+    if (auto* superCall = dynamic_cast<const SuperConstructorCallStmt*>(s)) {
+        std::string line = "CALL SUPER(";
+        for (std::size_t i = 0; i < superCall->arguments.size(); ++i) {
+            if (i != 0) line += ", ";
+            line += expr(superCall->arguments[i].get());
         }
         lines.push_back(line + ")");
         return;

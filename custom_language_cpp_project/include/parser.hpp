@@ -44,6 +44,7 @@ class Parser {
     StmtPtr parseForEach();
     StmtPtr parseListMutation(bool remove);
     StmtPtr parseExpressionStatement();
+    StmtPtr parseSuperConstructorCall();
     StmtPtr parseClass(bool abstractClass);
     StmtPtr parseStruct();
     StmtPtr parseEnum();

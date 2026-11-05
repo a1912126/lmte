@@ -376,12 +376,15 @@ method overriding, and abstract classes/methods:
 abstract define class Animal {
     public initialize string name
     public abstract define function speak() returning nothing
+    public define constructor {string who} {
+        set name to who
+    }
 }
 
 define class Dog inherits Animal {
     private initialize integer age
     public define constructor {string who, integer years} {
-        set name to who
+        super(who)
         set age to years
     }
     public define function speak() returning nothing {
@@ -394,10 +397,16 @@ call speak() from pike
 say name of pike
 ```
 
-Calling an overridden method on an instance dispatches to the most-derived
-implementation. Abstract classes cannot be instantiated; a concrete subclass
-must implement inherited abstract methods. Class members are private by default.
-Public fields can also be updated with `set field of instance to expression`.
+Methods can read and update their active object's fields directly. Calling an
+overridden method on an instance dispatches to the most-derived implementation.
+Abstract classes cannot be instantiated; a concrete subclass must implement
+inherited abstract methods. Class members are private by default. Public fields
+can also be updated with `set field of instance to expression`.
+
+A child constructor can call its inherited constructor with `super(arguments)`
+as its first statement. Use `super()` when the inherited constructor takes no
+arguments. If an intermediate parent has no constructor, the call continues up
+the inheritance chain to the nearest ancestor constructor.
 
 ## Structs and enums
 

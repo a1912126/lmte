@@ -28,7 +28,7 @@ class Interpreter {
     const ClassField* findField(const std::string& className, const std::string& field) const;
     const ClassMethod* findMethod(const std::string& className, const std::string& method) const;
     Value defaultValue(ValueType type) const;
-    void invokeMethod(const std::shared_ptr<ObjectInstance>& object, const std::string& method,
+    void invokeMethod(std::shared_ptr<ObjectInstance> object, const std::string& method,
                       const std::vector<Value>& arguments);
     void invokeConstructor(const std::shared_ptr<ObjectInstance>& object, const ClassStmt& klass,
                            const std::vector<Value>& arguments);

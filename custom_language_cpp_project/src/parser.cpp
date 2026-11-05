@@ -91,6 +91,7 @@ StmtPtr Parser::parseStatement() {
         errorAtCurrent("expected 'class', 'struct', 'enum', or 'function' after 'Define'");
     }
     if (matchWord("call")) return parseMethodCall();
+    if (matchWord("super")) return parseSuperConstructorCall();
     if (matchWord("set")) return parseSet();
     if (matchWord("say")) return parseOutput(false);
     if (matchWord("ask")) return parseInput();
@@ -404,6 +405,15 @@ StmtPtr Parser::parseMethodCall() {
     node->method = method.text;
     node->objectName = object.text;
     node->arguments = std::move(arguments);
+    return node;
+}
+
+StmtPtr Parser::parseSuperConstructorCall() {
+    auto node = std::make_unique<SuperConstructorCallStmt>();
+    consume(TokenType::LeftParen, "expected '(' after 'super'");
+    node->arguments = parseArguments();
+    consume(TokenType::RightParen, "expected ')' after super arguments");
+    optionalSemicolon();
     return node;
 }
 

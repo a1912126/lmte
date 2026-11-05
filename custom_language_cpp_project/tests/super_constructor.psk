@@ -1,0 +1,38 @@
+define class Base {
+    public initialize integer baseValue
+    public define constructor {integer initialValue} {
+        set baseValue to initialValue
+    }
+}
+
+define class Middle inherits Base {
+    public initialize integer middleValue
+}
+
+define class Child inherits Middle {
+    public initialize integer childValue
+    public define constructor {integer initialValue, integer childInitialValue} {
+        super(initialValue)
+        set childValue to childInitialValue
+    }
+}
+
+define class EmptyBase {
+    public initialize integer defaulted
+    public define constructor {} {
+        set defaulted to 5
+    }
+}
+
+define class EmptyChild inherits EmptyBase {
+    public define constructor {} {
+        super()
+    }
+}
+
+Initialize Child child with (7, 9)
+say baseValue of child
+say middleValue of child
+say childValue of child
+Initialize EmptyChild emptyChild
+say defaulted of emptyChild

@@ -1,0 +1,10 @@
+define class Base {
+}
+
+define class Child inherits Base {
+    public define function invalid() returning nothing {
+        super()
+    }
+}
+
+Initialize Child child

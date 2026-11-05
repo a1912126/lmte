@@ -21,7 +21,7 @@ for (int i = 0; i < 3; i++) {
 }
 string msg = "hello"
 say msg
-string bare = hello
+string bare = "hello"
 say bare
 divide x by 2
 say x

@@ -265,7 +265,7 @@ Value Interpreter::defaultValue(ValueType type) const {
     return {};
 }
 
-void Interpreter::invokeMethod(const std::shared_ptr<ObjectInstance>& object,
+void Interpreter::invokeMethod(std::shared_ptr<ObjectInstance> object,
                                const std::string& methodName,
                                const std::vector<Value>& arguments) {
     std::string lookupClass = object->className;
@@ -599,10 +599,32 @@ void Interpreter::exec(Stmt* stmt) {
             !object->second.object) {
             throw std::runtime_error("'" + call->objectName + "' is not a class instance");
         }
+        const auto instance = object->second.object;
         std::vector<Value> arguments;
         arguments.reserve(call->arguments.size());
         for (const auto& argument : call->arguments) arguments.push_back(eval(argument.get()));
-        invokeMethod(object->second.object, call->method, arguments);
+        invokeMethod(instance, call->method, arguments);
+        return;
+    }
+
+    if (auto* superCall = dynamic_cast<SuperConstructorCallStmt*>(stmt)) {
+        if (!activeObject) {
+            throw std::runtime_error("'super()' can only be used inside a constructor");
+        }
+        const auto current = context.classes.find(activeClass);
+        if (current == context.classes.end() || current->second->baseName.empty()) {
+            throw std::runtime_error("'super()' requires a base class");
+        }
+        std::vector<Value> arguments;
+        arguments.reserve(superCall->arguments.size());
+        for (const auto& argument : superCall->arguments) {
+            arguments.push_back(eval(argument.get()));
+        }
+        const auto baseClass = context.classes.find(current->second->baseName);
+        if (baseClass == context.classes.end()) {
+            throw std::runtime_error("undefined base class '" + current->second->baseName + "'");
+        }
+        invokeConstructor(activeObject, *baseClass->second, arguments);
         return;
     }
 

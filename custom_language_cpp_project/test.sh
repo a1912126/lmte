@@ -18,6 +18,13 @@ if [[ "$actual" != "hello" ]]; then
     exit 1
 fi
 
+stringIR="$(./customlang tests/string_ir_escaping.psk --ir)"
+if ! grep -Fq 'PRINT "line1\n\"quoted\"\\path"' <<<"$stringIR"; then
+    echo "FAIL: string literals should be escaped in generated IR"
+    printf '%s\n' "$stringIR"
+    exit 1
+fi
+
 for file in tests/string_unquoted_literal.psk tests/string_wrong_variable_type.psk tests/string_expression.psk; do
     if ./customlang "$file" >/dev/null 2>&1; then
         echo "FAIL: $file should be rejected"
@@ -25,13 +32,43 @@ for file in tests/string_unquoted_literal.psk tests/string_wrong_variable_type.p
     fi
 done
 
-expected=$'Dog Noise\nPike\nRex'
+expected=$'Dog Noise\nPike\nPike\nRex'
 actual="$(./customlang tests/classes.psk)"
 if [[ "$actual" != "$expected" ]]; then
-    echo "FAIL: class inheritance, constructor, access, and overriding"
+    echo "FAIL: class inheritance, constructor, method field access, and overriding"
     printf 'Expected:\n%s\nActual:\n%s\n' "$expected" "$actual"
     exit 1
 fi
+
+expected=$'3\n1'
+actual="$(./customlang tests/class_fix_scope.psk)"
+if [[ "$actual" != "$expected" ]]; then
+    echo "FAIL: fixed variables in class methods should not leak into other scopes"
+    printf 'Expected:\n%s\nActual:\n%s\n' "$expected" "$actual"
+    exit 1
+fi
+
+for file in tests/class_duplicate_method_parameters.psk tests/class_duplicate_constructor_parameters.psk; do
+    if ./customlang "$file" >/dev/null 2>&1; then
+        echo "FAIL: $file should reject duplicate parameters"
+        exit 1
+    fi
+done
+
+expected=$'7\n0\n9\n5'
+actual="$(./customlang tests/super_constructor.psk)"
+if [[ "$actual" != "$expected" ]]; then
+    echo "FAIL: explicit super constructor invocation and inherited constructor chaining"
+    printf 'Expected:\n%s\nActual:\n%s\n' "$expected" "$actual"
+    exit 1
+fi
+
+for file in tests/super_constructor_wrong_arity.psk tests/super_constructor_in_method.psk tests/super_constructor_not_first.psk; do
+    if ./customlang "$file" >/dev/null 2>&1; then
+        echo "FAIL: $file should reject invalid super constructor usage"
+        exit 1
+    fi
+done
 
 if ./customlang tests/private_field.psk >/dev/null 2>&1; then
     echo "FAIL: private field access should be rejected"

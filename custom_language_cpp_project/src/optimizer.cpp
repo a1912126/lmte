@@ -234,6 +234,8 @@ void optimizeStatement(StmtPtr& statement) {
         for (auto& argument : instance->arguments) optimizeExpression(argument);
     } else if (auto* call = dynamic_cast<MethodCallStmt*>(statement.get())) {
         for (auto& argument : call->arguments) optimizeExpression(argument);
+    } else if (auto* superCall = dynamic_cast<SuperConstructorCallStmt*>(statement.get())) {
+        for (auto& argument : superCall->arguments) optimizeExpression(argument);
     } else if (auto* returned = dynamic_cast<ReturnStmt*>(statement.get())) {
         optimizeExpression(returned->expression);
     } else if (auto* branch = dynamic_cast<IfStmt*>(statement.get())) {

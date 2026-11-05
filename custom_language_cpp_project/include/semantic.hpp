@@ -19,6 +19,8 @@ class SemanticAnalyzer {
     std::string currentGenericReturnType;
     ValueType currentReturnType = ValueType::Void;
     bool insideFunction = false;
+    bool insideConstructor = false;
+    bool superCallAllowed = false;
     int loopDepth = 0;
 
     [[noreturn]] void error(const std::string& message) const;

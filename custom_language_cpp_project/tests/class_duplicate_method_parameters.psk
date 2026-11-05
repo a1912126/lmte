@@ -1,0 +1,8 @@
+define class Holder {
+    public define function update(integer value, integer value) returning nothing {
+        say value
+    }
+}
+
+Initialize Holder holder
+call update(1, 2) from holder

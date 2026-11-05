@@ -240,4 +240,8 @@ struct MethodCallStmt : Stmt {
     std::vector<ExprPtr> arguments;
 };
 
+struct SuperConstructorCallStmt : Stmt {
+    std::vector<ExprPtr> arguments;
+};
+
 using Program = std::vector<StmtPtr>;

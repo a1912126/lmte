@@ -282,7 +282,7 @@ branches may already have been simplified.
 stores variable metadata and values in an interpreter context. Function calls
 install parameters/local values and restore the caller's state after return.
 Objects contain named fields; methods execute with an active object so method
-bodies can access fields.
+bodies can read and update its fields directly.
 
 ### Values, lists, and memory
 
@@ -314,6 +314,8 @@ Classes support:
 - fields and methods;
 - public/private member visibility;
 - constructors with typed parameters;
+- explicit parent-constructor calls using `super(...)` as the first constructor
+  statement;
 - single inheritance;
 - method overriding and dynamic dispatch through the instance's class
   hierarchy;

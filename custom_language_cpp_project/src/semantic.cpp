@@ -356,34 +356,83 @@ void SemanticAnalyzer::validateClass(const ClassStmt& klass) {
     const auto savedDeclared = declared;
     const auto savedClasses = declaredClasses;
     const auto savedEnums = declaredEnums;
+    const auto savedFixedVariables = fixedVariables;
     const std::string savedCurrentClass = currentClass;
     const ValueType savedReturnType = currentReturnType;
     const bool savedInsideFunction = insideFunction;
+    const bool savedInsideConstructor = insideConstructor;
+    const bool savedSuperCallAllowed = superCallAllowed;
     currentClass = klass.name;
-    auto validateBody = [&](const std::vector<Parameter>& parameters, BlockStmt* body) {
+    auto validateBody = [&](const std::vector<Parameter>& parameters, BlockStmt* body,
+                            bool isConstructor) {
         declared.clear();
         declaredClasses.clear();
         declaredEnums.clear();
-        for (const auto& parameter : parameters) declared[parameter.name] = parameter.type;
+        fixedVariables.clear();
+        std::unordered_set<std::string> parameterNames;
+        for (const auto& parameter : parameters) {
+            if (!parameterNames.insert(parameter.name).second) {
+                error("parameter '" + parameter.name + "' is declared more than once");
+            }
+            declared[parameter.name] = parameter.type;
+        }
         currentReturnType = ValueType::Void;
         insideFunction = true;
+        insideConstructor = isConstructor;
+        superCallAllowed = isConstructor;
         if (body) {
             for (auto& stmt : body->statements) statement(stmt.get());
         }
     };
-    if (klass.hasConstructor) validateBody(klass.constructorParameters, klass.constructorBody.get());
+    if (klass.hasConstructor) {
+        validateBody(klass.constructorParameters, klass.constructorBody.get(), true);
+    }
     for (const auto& method : klass.methods) {
-        if (!method.isAbstract) validateBody(method.parameters, method.body.get());
+        if (!method.isAbstract) validateBody(method.parameters, method.body.get(), false);
     }
     declared = savedDeclared;
     declaredClasses = savedClasses;
     declaredEnums = savedEnums;
+    fixedVariables = savedFixedVariables;
     currentClass = savedCurrentClass;
     currentReturnType = savedReturnType;
     insideFunction = savedInsideFunction;
+    insideConstructor = savedInsideConstructor;
+    superCallAllowed = savedSuperCallAllowed;
 }
 
 void SemanticAnalyzer::statement(Stmt* stmt) {
+    if (auto* superCall = dynamic_cast<SuperConstructorCallStmt*>(stmt)) {
+        if (!insideConstructor) error("'super()' can only be used inside a constructor");
+        if (!superCallAllowed) {
+            error("'super()' must be the first statement in a constructor");
+        }
+        superCallAllowed = false;
+        auto current = classes.find(currentClass);
+        if (current == classes.end() || current->second->baseName.empty()) {
+            error("'super()' requires a base class");
+        }
+        const ClassStmt* constructorClass = classes.at(current->second->baseName);
+        while (constructorClass && !constructorClass->hasConstructor &&
+               !constructorClass->baseName.empty()) {
+            constructorClass = classes.at(constructorClass->baseName);
+        }
+        const std::vector<Parameter>* expected = nullptr;
+        if (constructorClass && constructorClass->hasConstructor) {
+            expected = &constructorClass->constructorParameters;
+        }
+        const std::size_t expectedCount = expected ? expected->size() : 0;
+        if (superCall->arguments.size() != expectedCount) {
+            error("wrong number of arguments for base constructor");
+        }
+        for (std::size_t i = 0; i < expectedCount; ++i) {
+            if (!assignable((*expected)[i].type, exprType(superCall->arguments[i].get()))) {
+                error("base constructor argument type mismatch for '" + (*expected)[i].name + "'");
+            }
+        }
+        return;
+    }
+    if (insideConstructor && superCallAllowed) superCallAllowed = false;
     if (dynamic_cast<ClassStmt*>(stmt) || dynamic_cast<StructStmt*>(stmt) ||
         dynamic_cast<EnumStmt*>(stmt)) return;
     if (auto* declaration = dynamic_cast<DeclarationStmt*>(stmt)) {
@@ -670,6 +719,8 @@ void SemanticAnalyzer::analyze(const Program& program) {
     functions.clear();
     fixedVariables.clear();
     currentClass.clear();
+    insideConstructor = false;
+    superCallAllowed = false;
     for (const auto& stmt : program) {
         if (auto* klass = dynamic_cast<const ClassStmt*>(stmt.get())) {
             if (classes.count(klass->name) || structs.count(klass->name) || enums.count(klass->name)) {

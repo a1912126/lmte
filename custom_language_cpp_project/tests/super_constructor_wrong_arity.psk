@@ -1,0 +1,12 @@
+define class Base {
+    public define constructor {integer value} {
+    }
+}
+
+define class Child inherits Base {
+    public define constructor {} {
+        super()
+    }
+}
+
+Initialize Child child
