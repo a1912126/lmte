@@ -1,0 +1,6 @@
+define class Secret {
+    private initialize integer value
+}
+
+Initialize Secret box with ()
+say value of box

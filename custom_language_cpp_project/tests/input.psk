@@ -1,0 +1,15 @@
+initialize int age
+ask "Enter your age: " into age
+say age
+
+initialize float height
+ask "Enter your height: " into height
+say height
+
+initialize string name
+ask "Enter your name: " into name
+say name
+
+initialize bool ready
+ask "Ready? " into ready
+say ready

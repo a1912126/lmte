@@ -1,0 +1,39 @@
+abstract define class Animal {
+    public initialize string name
+    public abstract define function speak() returning nothing
+}
+
+define class Dog inherits Animal {
+    private initialize integer age
+
+    public define constructor {string animalName, integer animalAge} {
+        set name to animalName
+        set age to animalAge
+    }
+
+    public define function speak() returning nothing {
+        say "Woof!"
+    }
+}
+
+define class Cat inherits Animal {
+    private initialize integer age
+
+    public define constructor {string animalName, integer animalAge} {
+        set name to animalName
+        set age to animalAge
+    }
+
+    public define function speak() returning nothing {
+        say "Meow!"
+    }
+}
+
+Initialize Dog rover with ("Rover", 4)
+Initialize Cat luna with ("Luna", 2)
+
+call speak() from rover
+call speak() from luna
+say name of rover
+set name of rover to "Buddy"
+say name of rover

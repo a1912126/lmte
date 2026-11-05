@@ -1,0 +1,5 @@
+define function invalid<T>(T value) returning T {
+    return 0
+}
+
+say invalid("text")

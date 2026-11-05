@@ -1,0 +1,27 @@
+initialize x int
+set x to 5
+cout << x
+add 5 to x
+say x
+if x is greater than 5 {
+    say x
+} otherwise {
+    say "not greater"
+}
+while x is less than 10 do {
+    x = x + 1
+}
+say x
+repeat 3 times {
+    subtract 1 from x
+}
+say x
+for (int i = 0; i < 3; i++) {
+    say i
+}
+string msg = "hello"
+say msg
+string bare = hello
+say bare
+divide x by 2
+say x

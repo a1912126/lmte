@@ -1,0 +1,5 @@
+define function first<T>(T value, T fallback) returning T {
+    return value
+}
+
+say first(7, "not an integer")

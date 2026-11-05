@@ -1,0 +1,4 @@
+initialize count int
+set count to 5
+initialize message string
+set message to count

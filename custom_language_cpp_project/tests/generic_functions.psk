@@ -1,0 +1,11 @@
+define function identity<T>(T value) returning T {
+    return value
+}
+
+define function first<T>(T value, T fallback) returning T {
+    return value
+}
+
+say identity(42)
+say identity("generic")
+say first(7, 9)

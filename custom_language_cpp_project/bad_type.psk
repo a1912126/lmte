@@ -1,0 +1,2 @@
+initialize x int
+set x to "hello"

@@ -1,0 +1,91 @@
+define function double(integer value) returning integer {
+    return value * 2
+}
+
+define function factorial(integer value) returning integer {
+    if value is equal to 0 {
+        return 1
+    }
+    return value * factorial(value - 1)
+}
+
+define function finish() returning nothing {
+    say "finished"
+    return
+    say "unreachable"
+}
+
+define function readShared() returning integer {
+    return shared
+}
+
+define function incrementShared() returning nothing {
+    add 1 to shared
+}
+
+say double(4)
+say factorial(5)
+finish()
+initialize integer shared
+set shared to 6
+incrementShared()
+say readShared()
+say true
+say 9 mod 4
+initialize integer remainder
+set remainder to 17
+mod remainder by 5
+say remainder
+
+if 1 is not equal to 2 {
+    say "not equal"
+}
+if 3 is greater than or equal to 3 {
+    say "greater or equal"
+}
+if true and not false {
+    say "logical"
+}
+if false or true {
+    say "or"
+}
+if 2 is less than or equal to 2 {
+    say "less or equal"
+}
+
+initialize integer choice
+set choice to 2
+check choice {
+    when 1 {
+        say "wrong case"
+    }
+    when 2 {
+        say "selected"
+    }
+    otherwise {
+        say "wrong default"
+    }
+}
+
+initialize list values
+put 10 on values
+put 20 on values
+say length of values
+say item of values at 1
+say top of values
+for each number in values {
+    if number is equal to 10 {
+        skip
+    }
+    say number
+}
+for each number in values {
+    stop
+}
+remove item of values
+say length of values
+
+initialize integer constant
+set constant to 7
+fix constant
+say constant

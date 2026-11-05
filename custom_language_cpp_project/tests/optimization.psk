@@ -1,0 +1,9 @@
+if (true) {
+    say (2 + 3) * 4
+} else {
+    say 99
+}
+
+while (false) {
+    say "unreachable"
+}

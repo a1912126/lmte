@@ -1,0 +1,20 @@
+Define struct Point {
+    integer x
+    float y
+}
+
+Define enum Colour {red, green, blue}
+
+initialize Point p
+set x of p to 3
+set y of p to 4.5
+say x of p
+say y of p
+
+initialize Colour colour
+set colour to green
+say red
+say colour
+if colour is equal to green {
+    say "green selected"
+}

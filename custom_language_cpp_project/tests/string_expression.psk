@@ -1,0 +1,2 @@
+initialize message string
+set message to "hello" + " world"

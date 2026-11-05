@@ -1,0 +1,8 @@
+abstract define class Animal {
+    public abstract define function speak() returning nothing
+}
+
+define class SilentAnimal inherits Animal {
+}
+
+Initialize SilentAnimal pet with ()

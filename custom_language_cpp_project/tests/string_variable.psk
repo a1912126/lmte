@@ -1,0 +1,8 @@
+initialize first string
+set first to "hello"
+initialize second string
+set second to first
+say second
+set first to "changed"
+set second to first
+say second
