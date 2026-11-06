@@ -1,8 +1,9 @@
 #include "interpreter.hpp"
 #include <algorithm>
+#include <climits>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
-#include <set>
 #include <stdexcept>
 
 namespace {
@@ -11,6 +12,23 @@ struct ReturnSignal {
 };
 struct BreakSignal {};
 struct ContinueSignal {};
+
+constexpr std::size_t maxLoopIterations = 10000000;
+// Nested function/method/constructor calls allowed before reporting likely infinite recursion.
+#ifndef PLAINSPEAK_MAX_CALL_DEPTH
+#define PLAINSPEAK_MAX_CALL_DEPTH 10000
+#endif
+constexpr int maxCallDepth = PLAINSPEAK_MAX_CALL_DEPTH;
+
+template <typename F>
+struct ScopeExit {
+    F action;
+    ~ScopeExit() { action(); }
+};
+template <typename F>
+ScopeExit<F> onExit(F action) {
+    return ScopeExit<F>{std::move(action)};
+}
 
 bool sameValue(const Value& left, const Value& right) {
     if (left.type != right.type) {
@@ -29,34 +47,62 @@ bool sameValue(const Value& left, const Value& right) {
         case ValueType::Bool: return left.b == right.b;
         case ValueType::Enum:
             return left.enumType == right.enumType && left.enumIndex == right.enumIndex;
+        // Lists and objects are compared by reference: a value is always equal to itself.
+        case ValueType::List: return left.list == right.list;
+        case ValueType::Object: return left.object == right.object;
         default: return false;
     }
 }
 
-void collectLocals(const Stmt* statement, std::set<std::string>& names) {
-    if (auto* declaration = dynamic_cast<const DeclarationStmt*>(statement)) names.insert(declaration->name);
-    else if (auto* initialize = dynamic_cast<const InitializeStmt*>(statement)) names.insert(initialize->name);
-    else if (auto* initialize = dynamic_cast<const NamedInitializeStmt*>(statement)) names.insert(initialize->name);
-    else if (auto* instance = dynamic_cast<const InstantiateStmt*>(statement)) names.insert(instance->name);
-    else if (auto* loop = dynamic_cast<const ForEachStmt*>(statement)) {
-        names.insert(loop->name);
-        collectLocals(loop->body.get(), names);
-    } else if (auto* loop = dynamic_cast<const ForStmt*>(statement)) {
-        collectLocals(loop->init.get(), names);
-        collectLocals(loop->body.get(), names);
-    } else if (auto* loop = dynamic_cast<const WhileStmt*>(statement)) {
-        collectLocals(loop->body.get(), names);
-    } else if (auto* loop = dynamic_cast<const RepeatStmt*>(statement)) {
-        collectLocals(loop->body.get(), names);
-    } else if (auto* branch = dynamic_cast<const IfStmt*>(statement)) {
-        collectLocals(branch->thenBlock.get(), names);
-        if (branch->elseBlock) collectLocals(branch->elseBlock.get(), names);
-    } else if (auto* check = dynamic_cast<const CheckStmt*>(statement)) {
-        for (const auto& item : check->cases) collectLocals(item.body.get(), names);
-        if (check->otherwise) collectLocals(check->otherwise.get(), names);
-    } else if (auto* block = dynamic_cast<const BlockStmt*>(statement)) {
-        for (const auto& child : block->statements) collectLocals(child.get(), names);
+// Integer arithmetic that reports overflow instead of invoking undefined behaviour.
+long long integerArithmetic(const std::string& op, long long a, long long b) {
+    long long result = 0;
+    if (op == "+") {
+        if (__builtin_add_overflow(a, b, &result)) throw std::runtime_error("integer overflow");
+        return result;
     }
+    if (op == "-") {
+        if (__builtin_sub_overflow(a, b, &result)) throw std::runtime_error("integer overflow");
+        return result;
+    }
+    if (op == "*") {
+        if (__builtin_mul_overflow(a, b, &result)) throw std::runtime_error("integer overflow");
+        return result;
+    }
+    if (op == "/") {
+        if (b == 0) throw std::runtime_error("division by zero");
+        if (a == LLONG_MIN && b == -1) throw std::runtime_error("integer overflow");
+        return a / b;
+    }
+    if (op == "mod") {
+        if (b == 0) throw std::runtime_error("modulo by zero");
+        if (b == -1) return 0;
+        return a % b;
+    }
+    throw std::runtime_error("unsupported arithmetic operation '" + op + "'");
+}
+
+double floatArithmetic(const std::string& op, double a, double b) {
+    if (op == "+") return a + b;
+    if (op == "-") return a - b;
+    if (op == "*") return a * b;
+    if (op == "/") {
+        if (b == 0.0) throw std::runtime_error("division by zero");
+        return a / b;
+    }
+    if (op == "mod") {
+        if (b == 0.0) throw std::runtime_error("modulo by zero");
+        return std::fmod(a, b);
+    }
+    throw std::runtime_error("unsupported arithmetic operation '" + op + "'");
+}
+
+std::string compoundOperator(const std::string& command) {
+    if (command == "add") return "+";
+    if (command == "subtract") return "-";
+    if (command == "multiply") return "*";
+    if (command == "divide") return "/";
+    return "mod";
 }
 }
 
@@ -68,28 +114,56 @@ double Interpreter::asDouble(const Value& value) const {
     return value.type == ValueType::Int ? static_cast<double>(value.i) : value.f;
 }
 
+Interpreter::Slot Interpreter::resolve(const std::string& name) {
+    Slot slot;
+    auto local = frame->values.find(name);
+    if (local != frame->values.end()) {
+        slot.frame = frame;
+        slot.value = &local->second;
+        return slot;
+    }
+    if (activeObject) {
+        auto field = activeObject->fields.find(name);
+        if (field != activeObject->fields.end()) {
+            slot.value = &field->second;
+            slot.isField = true;
+            return slot;
+        }
+    }
+    if (frame != &context.globals) {
+        auto global = context.globals.values.find(name);
+        if (global != context.globals.values.end()) {
+            slot.frame = &context.globals;
+            slot.value = &global->second;
+        }
+    }
+    return slot;
+}
+
+std::shared_ptr<std::vector<Value>> Interpreter::listNamed(const std::string& name) {
+    const Slot slot = resolve(name);
+    if (!slot.value || slot.value->type != ValueType::List || !slot.value->list) {
+        throw std::runtime_error("'" + name + "' is not a list");
+    }
+    return slot.value->list;
+}
+
 Value Interpreter::eval(const Expr* e) {
     if (auto* literal = dynamic_cast<const LiteralExpr*>(e)) return literal->value;
 
     if (auto* variable = dynamic_cast<const VariableExpr*>(e)) {
-        auto it = context.values.find(variable->name);
-        if (it == context.values.end()) {
-            if (activeObject) {
-                auto field = activeObject->fields.find(variable->name);
-                if (field != activeObject->fields.end()) return field->second;
+        const Slot slot = resolve(variable->name);
+        if (slot.value) return *slot.value;
+        for (const auto& [enumName, definition] : context.enums) {
+            auto member = std::find(definition->members.begin(), definition->members.end(),
+                                    variable->name);
+            if (member != definition->members.end()) {
+                return Value::makeEnum(
+                    enumName, variable->name,
+                    static_cast<long long>(std::distance(definition->members.begin(), member)));
             }
-            for (const auto& [enumName, definition] : context.enums) {
-                auto member = std::find(definition->members.begin(), definition->members.end(),
-                                        variable->name);
-                if (member != definition->members.end()) {
-                    return Value::makeEnum(
-                        enumName, variable->name,
-                        static_cast<long long>(std::distance(definition->members.begin(), member)));
-                }
-            }
-            throw std::runtime_error("undefined variable or field '" + variable->name + "'");
         }
-        return it->second;
+        throw std::runtime_error("undefined variable or field '" + variable->name + "'");
     }
 
     if (auto* member = dynamic_cast<const MemberExpr*>(e)) {
@@ -105,12 +179,7 @@ Value Interpreter::eval(const Expr* e) {
     }
 
     if (auto* list = dynamic_cast<const ListExpr*>(e)) {
-        const auto found = context.values.find(list->name);
-        if (found == context.values.end() || found->second.type != ValueType::List ||
-            !found->second.list) {
-            throw std::runtime_error("'" + list->name + "' is not a list");
-        }
-        const auto values = found->second.list;
+        const auto values = listNamed(list->name);
         if (list->operation == ListExpr::Operation::Length) {
             return Value::makeInt(static_cast<long long>(values->size()));
         }
@@ -119,8 +188,9 @@ Value Interpreter::eval(const Expr* e) {
             return values->back();
         }
         const Value indexValue = eval(list->index.get());
-        const long long index = indexValue.type == ValueType::Int ? indexValue.i : -1;
-        if (index < 0 || static_cast<std::size_t>(index) >= values->size()) {
+        if (indexValue.type != ValueType::Int) throw std::runtime_error("list index must be an integer");
+        const long long index = indexValue.i;
+        if (index < 0 || static_cast<unsigned long long>(index) >= values->size()) {
             throw std::runtime_error("list index out of range");
         }
         return values->at(static_cast<std::size_t>(index));
@@ -138,11 +208,16 @@ Value Interpreter::eval(const Expr* e) {
 
     if (auto* unary = dynamic_cast<const UnaryExpr*>(e)) {
         Value value = eval(unary->expr.get());
-        if (unary->op == "+") return value;
         if (unary->op == "not") return Value::makeBool(!truth(value));
-        if (value.type == ValueType::Int) return Value::makeInt(-value.i);
-        if (value.type == ValueType::Float) return Value::makeFloat(-value.f);
-        throw std::runtime_error("invalid unary operation");
+        if (!numeric(value.type)) {
+            throw std::runtime_error("unary '" + unary->op + "' requires a number");
+        }
+        if (unary->op == "+") return value;
+        if (value.type == ValueType::Int) {
+            if (value.i == LLONG_MIN) throw std::runtime_error("integer overflow");
+            return Value::makeInt(-value.i);
+        }
+        return Value::makeFloat(-value.f);
     }
 
     auto* binary = dynamic_cast<const BinaryExpr*>(e);
@@ -154,42 +229,19 @@ Value Interpreter::eval(const Expr* e) {
     if (op == "or") return Value::makeBool(truth(left) || truth(eval(binary->right.get())));
     Value right = eval(binary->right.get());
 
-    if (op == "+") {
-        if (left.type == ValueType::String && right.type == ValueType::String) {
-            return Value::makeString(left.s + right.s);
-        }
-        if (numeric(left.type) && numeric(right.type)) {
-            if (left.type == ValueType::Int && right.type == ValueType::Int) {
-                return Value::makeInt(left.i + right.i);
-            }
-            return Value::makeFloat(asDouble(left) + asDouble(right));
-        }
+    if (op == "+" && left.type == ValueType::String && right.type == ValueType::String) {
+        return Value::makeString(left.s + right.s);
     }
 
-    if (op == "-" || op == "*" || op == "/" || op == "mod") {
+    if (op == "+" || op == "-" || op == "*" || op == "/" || op == "mod") {
         if (!numeric(left.type) || !numeric(right.type)) {
-            throw std::runtime_error("arithmetic requires numeric operands");
+            throw std::runtime_error(op == "+" ? "operator '+' requires two numbers or two strings"
+                                               : "operator '" + op + "' requires numeric operands");
         }
-
-        const double divisor = asDouble(right);
-        if ((op == "/" && std::fabs(divisor) < 1e-15) ||
-            (op == "mod" && std::fabs(divisor) < 1e-15)) {
-            throw std::runtime_error(op == "/" ? "division by zero" : "modulo by zero");
-        }
-
         if (left.type == ValueType::Int && right.type == ValueType::Int) {
-            if (op == "-") return Value::makeInt(left.i - right.i);
-            if (op == "*") return Value::makeInt(left.i * right.i);
-            if (op == "/") return Value::makeInt(left.i / right.i);
-            return Value::makeInt(left.i % right.i);
+            return Value::makeInt(integerArithmetic(op, left.i, right.i));
         }
-
-        const double a = asDouble(left);
-        const double b = asDouble(right);
-        if (op == "-") return Value::makeFloat(a - b);
-        if (op == "*") return Value::makeFloat(a * b);
-        if (op == "mod") return Value::makeFloat(std::fmod(a, b));
-        return Value::makeFloat(a / b);
+        return Value::makeFloat(floatArithmetic(op, asDouble(left), asDouble(right)));
     }
 
     if (op == "==" || op == "!=") {
@@ -198,22 +250,24 @@ Value Interpreter::eval(const Expr* e) {
     }
 
     if (op == "<" || op == "<=" || op == ">" || op == ">=") {
-        bool result = false;
-        if (numeric(left.type) && numeric(right.type)) {
+        int order = 0;
+        if (left.type == ValueType::Int && right.type == ValueType::Int) {
+            // Compare integers exactly: doubles cannot hold every value above 2^53.
+            order = left.i < right.i ? -1 : (left.i > right.i ? 1 : 0);
+        } else if (numeric(left.type) && numeric(right.type)) {
             const double a = asDouble(left);
             const double b = asDouble(right);
-            if (op == "<") result = a < b;
-            else if (op == "<=") result = a <= b;
-            else if (op == ">") result = a > b;
-            else result = a >= b;
+            order = a < b ? -1 : (a > b ? 1 : 0);
         } else if (left.type == ValueType::String && right.type == ValueType::String) {
-            if (op == "<") result = left.s < right.s;
-            else if (op == "<=") result = left.s <= right.s;
-            else if (op == ">") result = left.s > right.s;
-            else result = left.s >= right.s;
+            order = left.s < right.s ? -1 : (left.s > right.s ? 1 : 0);
         } else {
-            throw std::runtime_error("invalid comparison");
+            throw std::runtime_error("comparison requires two numbers or two strings");
         }
+        bool result = false;
+        if (op == "<") result = order < 0;
+        else if (op == "<=") result = order <= 0;
+        else if (op == ">") result = order > 0;
+        else result = order >= 0;
         return Value::makeBool(result);
     }
 
@@ -222,37 +276,49 @@ Value Interpreter::eval(const Expr* e) {
 
 bool Interpreter::truth(const Value& value) const {
     if (value.type == ValueType::Bool) return value.b;
-    if (value.type == ValueType::Int) return value.i != 0;
-    if (value.type == ValueType::Float) return std::fabs(value.f) > 1e-15;
-    if (value.type == ValueType::String) return !value.s.empty();
-    return false;
+    throw std::runtime_error("condition must be a boolean value, found " + typeName(value.type));
 }
 
-Value Interpreter::castTo(ValueType target, const Value& value) const {
+Value Interpreter::castTo(ValueType target, const Value& value, const std::string& name) const {
     if (target == ValueType::Any) return value;
     if (target == value.type) return value;
     if (target == ValueType::Float && value.type == ValueType::Int) {
         return Value::makeFloat(static_cast<double>(value.i));
     }
-    throw std::runtime_error("type conversion failed");
+    throw std::runtime_error("cannot assign " + typeName(value.type) + " value to " +
+                             typeName(target) + " " + name);
 }
 
-const ClassField* Interpreter::findField(const std::string& className, const std::string& field) const {
-    auto it = context.classes.find(className);
-    if (it == context.classes.end()) return nullptr;
-    for (const auto& candidate : it->second->fields) {
-        if (candidate.name == field) return &candidate;
+bool Interpreter::derivesFrom(const std::string& className, const std::string& baseName) const {
+    std::string name = className;
+    for (std::size_t depth = 0; !name.empty() && depth <= context.classes.size(); ++depth) {
+        if (name == baseName) return true;
+        auto it = context.classes.find(name);
+        if (it == context.classes.end()) break;
+        name = it->second->baseName;
     }
-    return it->second->baseName.empty() ? nullptr : findField(it->second->baseName, field);
+    return false;
 }
 
-const ClassMethod* Interpreter::findMethod(const std::string& className, const std::string& method) const {
-    auto it = context.classes.find(className);
-    if (it == context.classes.end()) return nullptr;
-    for (const auto& candidate : it->second->methods) {
-        if (candidate.name == method) return &candidate;
+// Converts a value for storage in an existing variable or field, checking its declared type.
+Value Interpreter::assignTo(const Slot& slot, const std::string& name, const Value& value) const {
+    if (slot.isField) return castTo(slot.value->type, value, "field '" + name + "'");
+    const ValueType type = slot.frame->types.at(name);
+    Value converted = castTo(type, value, "variable '" + name + "'");
+    auto declaredClass = slot.frame->classNames.find(name);
+    if (declaredClass != slot.frame->classNames.end()) {
+        if (type == ValueType::Object && converted.object &&
+            !derivesFrom(converted.object->className, declaredClass->second)) {
+            throw std::runtime_error("cannot assign " + converted.object->className +
+                                     " object to " + declaredClass->second + " variable '" +
+                                     name + "'");
+        }
+        if (type == ValueType::Enum && converted.enumType != declaredClass->second) {
+            throw std::runtime_error("cannot assign " + converted.enumType + " value to " +
+                                     declaredClass->second + " variable '" + name + "'");
+        }
     }
-    return it->second->baseName.empty() ? nullptr : findMethod(it->second->baseName, method);
+    return converted;
 }
 
 Value Interpreter::defaultValue(ValueType type) const {
@@ -261,8 +327,60 @@ Value Interpreter::defaultValue(ValueType type) const {
     if (type == ValueType::String) return Value::makeString("");
     if (type == ValueType::Bool) return Value::makeBool(false);
     if (type == ValueType::List) return Value::makeList();
-    if (type == ValueType::Enum) return {};
     return {};
+}
+
+std::shared_ptr<ObjectInstance> Interpreter::newObject(const std::string& className) {
+    auto object = std::make_shared<ObjectInstance>();
+    object->className = className;
+    auto structure = context.structs.find(className);
+    if (structure != context.structs.end()) {
+        for (const auto& field : structure->second->fields) {
+            object->fields[field.name] = defaultValue(field.type);
+        }
+        return object;
+    }
+    std::vector<const ClassStmt*> lineage;
+    for (std::string name = className; !name.empty();) {
+        const ClassStmt* klass = context.classes.at(name);
+        lineage.push_back(klass);
+        name = klass->baseName;
+    }
+    for (auto it = lineage.rbegin(); it != lineage.rend(); ++it) {
+        for (const auto& field : (*it)->fields) object->fields[field.name] = defaultValue(field.type);
+    }
+    return object;
+}
+
+void Interpreter::runBody(Frame& local, const std::shared_ptr<ObjectInstance>& object,
+                          const std::string& className, BlockStmt* body, Value* returned,
+                          bool* didReturn) {
+    // Stop before deep recursion overflows the C++ stack and crashes the process.
+    const char marker = 0;
+    const auto here = reinterpret_cast<std::uintptr_t>(&marker);
+    if (callDepth >= maxCallDepth || (stackBase > here && stackBase - here > stackBudget)) {
+        throw std::runtime_error("too many nested calls (" + std::to_string(callDepth) +
+                                 " deep); possible infinite recursion");
+    }
+    Frame* const savedFrame = frame;
+    const auto savedObject = activeObject;
+    const std::string savedClass = activeClass;
+    ++callDepth;
+    auto restore = onExit([&] {
+        frame = savedFrame;
+        activeObject = savedObject;
+        activeClass = savedClass;
+        --callDepth;
+    });
+    frame = &local;
+    activeObject = object;
+    activeClass = className;
+    try {
+        execBlock(body);
+    } catch (ReturnSignal& signal) {
+        if (returned) *returned = std::move(signal.value);
+        if (didReturn) *didReturn = true;
+    }
 }
 
 void Interpreter::invokeMethod(std::shared_ptr<ObjectInstance> object,
@@ -288,89 +406,44 @@ void Interpreter::invokeMethod(std::shared_ptr<ObjectInstance> object,
         throw std::runtime_error("method '" + methodName + "' has no concrete implementation");
     }
 
-    auto savedTypes = context.types;
-    auto savedValues = context.values;
-    auto savedConstants = context.constants;
-    const auto savedObject = activeObject;
-    const std::string savedClass = activeClass;
-    context.types.clear();
-    context.values.clear();
-    context.constants.clear();
+    Frame local;
     for (std::size_t i = 0; i < method->parameters.size(); ++i) {
         const auto& parameter = method->parameters[i];
-        context.types[parameter.name] = parameter.type;
-        context.values[parameter.name] = castTo(parameter.type, arguments.at(i));
+        local.types[parameter.name] = parameter.type;
+        local.values[parameter.name] =
+            castTo(parameter.type, arguments.at(i), "parameter '" + parameter.name + "'");
     }
-    activeObject = object;
-    activeClass = declaringClass;
-    try {
-        execBlock(method->body.get());
-    } catch (const ReturnSignal&) {
-        context.types = std::move(savedTypes);
-        context.values = std::move(savedValues);
-        context.constants = std::move(savedConstants);
-        activeObject = savedObject;
-        activeClass = savedClass;
-    } catch (...) {
-        context.types = std::move(savedTypes);
-        context.values = std::move(savedValues);
-        context.constants = std::move(savedConstants);
-        activeObject = savedObject;
-        activeClass = savedClass;
-        throw;
-    }
-    context.types = std::move(savedTypes);
-    context.values = std::move(savedValues);
-    context.constants = std::move(savedConstants);
-    activeObject = savedObject;
-    activeClass = savedClass;
+    runBody(local, object, declaringClass, method->body.get());
 }
 
 void Interpreter::invokeConstructor(const std::shared_ptr<ObjectInstance>& object,
                                     const ClassStmt& klass,
                                     const std::vector<Value>& arguments) {
     if (!klass.hasConstructor) {
+        // A class without a constructor uses its parent's.
         if (!klass.baseName.empty()) {
             invokeConstructor(object, *context.classes.at(klass.baseName), arguments);
         }
         return;
     }
-    auto savedTypes = context.types;
-    auto savedValues = context.values;
-    auto savedConstants = context.constants;
-    const auto savedObject = activeObject;
-    const std::string savedClass = activeClass;
-    context.types.clear();
-    context.values.clear();
-    context.constants.clear();
+    const auto& statements = klass.constructorBody->statements;
+    const bool explicitSuper = !statements.empty() &&
+        dynamic_cast<const SuperConstructorCallStmt*>(statements.front().get()) != nullptr;
+    if (!explicitSuper && !klass.baseName.empty()) {
+        // No super(...) call: run the inherited no-argument constructor first, as most
+        // object-oriented languages do. Semantic analysis rejects this when the inherited
+        // constructor needs arguments.
+        invokeConstructor(object, *context.classes.at(klass.baseName), {});
+    }
+
+    Frame local;
     for (std::size_t i = 0; i < klass.constructorParameters.size(); ++i) {
         const auto& parameter = klass.constructorParameters[i];
-        context.types[parameter.name] = parameter.type;
-        context.values[parameter.name] = castTo(parameter.type, arguments.at(i));
+        local.types[parameter.name] = parameter.type;
+        local.values[parameter.name] =
+            castTo(parameter.type, arguments.at(i), "parameter '" + parameter.name + "'");
     }
-    activeObject = object;
-    activeClass = klass.name;
-    try {
-        execBlock(klass.constructorBody.get());
-    } catch (const ReturnSignal&) {
-        context.types = std::move(savedTypes);
-        context.values = std::move(savedValues);
-        context.constants = std::move(savedConstants);
-        activeObject = savedObject;
-        activeClass = savedClass;
-    } catch (...) {
-        context.types = std::move(savedTypes);
-        context.values = std::move(savedValues);
-        context.constants = std::move(savedConstants);
-        activeObject = savedObject;
-        activeClass = savedClass;
-        throw;
-    }
-    context.types = std::move(savedTypes);
-    context.values = std::move(savedValues);
-    context.constants = std::move(savedConstants);
-    activeObject = savedObject;
-    activeClass = savedClass;
+    runBody(local, object, klass.name, klass.constructorBody.get());
 }
 
 Value Interpreter::invokeFunction(const FunctionStmt& function,
@@ -379,49 +452,37 @@ Value Interpreter::invokeFunction(const FunctionStmt& function,
         throw std::runtime_error("wrong number of arguments for function '" + function.name + "'");
     }
 
-    std::set<std::string> localNames;
-    for (const auto& parameter : function.parameters) localNames.insert(parameter.name);
-    collectLocals(function.body.get(), localNames);
-
-    auto savedTypes = context.types;
-    auto savedValues = context.values;
-    auto savedClasses = context.classNames;
-    auto savedConstants = context.constants;
-    auto restoreLocals = [&]() {
-        for (const auto& name : localNames) {
-            context.types.erase(name);
-            context.values.erase(name);
-            context.classNames.erase(name);
-            context.constants.erase(name);
-            if (savedTypes.count(name)) context.types[name] = savedTypes.at(name);
-            if (savedValues.count(name)) context.values[name] = savedValues.at(name);
-            if (savedClasses.count(name)) context.classNames[name] = savedClasses.at(name);
-            if (savedConstants.count(name)) context.constants[name] = savedConstants.at(name);
-        }
-    };
-
+    // Each call gets its own frame. Names that are not local resolve to globals,
+    // never to the caller's variables or to the fields of a calling method's object.
+    Frame local;
     for (std::size_t i = 0; i < arguments.size(); ++i) {
         const auto& parameter = function.parameters[i];
-        context.types[parameter.name] = parameter.type;
-        context.values[parameter.name] = castTo(parameter.type, arguments[i]);
+        local.types[parameter.name] = parameter.type;
+        local.values[parameter.name] =
+            castTo(parameter.type, arguments[i], "parameter '" + parameter.name + "'");
     }
 
-    try {
-        execBlock(function.body.get());
-    } catch (const ReturnSignal& returned) {
-        restoreLocals();
-        return function.returnType == ValueType::Void
-                   ? Value{}
-                   : castTo(function.returnType, returned.value);
-    } catch (...) {
-        restoreLocals();
-        throw;
-    }
-    restoreLocals();
-    if (function.returnType != ValueType::Void) {
+    Value result;
+    bool returned = false;
+    runBody(local, nullptr, "", function.body.get(), &result, &returned);
+    if (function.returnType == ValueType::Void) return {};
+    if (!returned) {
         throw std::runtime_error("function '" + function.name + "' completed without returning a value");
     }
-    return {};
+    return castTo(function.returnType, result, "return value of function '" + function.name + "'");
+}
+
+void Interpreter::declare(const std::string& name, ValueType type, Value value,
+                          const std::string& className) {
+    frame->types[name] = type;
+    frame->values[name] = std::move(value);
+    if (className.empty()) frame->classNames.erase(name);
+    else frame->classNames[name] = className;
+    frame->constants.erase(name);
+}
+
+void Interpreter::loopGuard(std::size_t& iterations) const {
+    if (++iterations > maxLoopIterations) throw std::runtime_error("possible infinite loop");
 }
 
 void Interpreter::exec(Stmt* stmt) {
@@ -429,10 +490,11 @@ void Interpreter::exec(Stmt* stmt) {
         dynamic_cast<EnumStmt*>(stmt) || dynamic_cast<FunctionStmt*>(stmt)) return;
 
     if (auto* fix = dynamic_cast<FixStmt*>(stmt)) {
-        if (!context.values.count(fix->name)) {
+        const Slot slot = resolve(fix->name);
+        if (!slot.value || slot.isField) {
             throw std::runtime_error("cannot fix undeclared variable '" + fix->name + "'");
         }
-        context.constants[fix->name] = true;
+        slot.frame->constants.insert(fix->name);
         return;
     }
 
@@ -446,137 +508,86 @@ void Interpreter::exec(Stmt* stmt) {
     }
 
     if (auto* declaration = dynamic_cast<DeclarationStmt*>(stmt)) {
-        context.types[declaration->name] = declaration->type;
-        if (declaration->initializer) {
-            context.values[declaration->name] = castTo(
-                declaration->type, eval(declaration->initializer.get()));
-        } else {
-            context.values[declaration->name] = defaultValue(declaration->type);
-        }
+        Value value = declaration->initializer
+                          ? castTo(declaration->type, eval(declaration->initializer.get()),
+                                   "variable '" + declaration->name + "'")
+                          : defaultValue(declaration->type);
+        declare(declaration->name, declaration->type, std::move(value));
         return;
     }
 
     if (auto* initialize = dynamic_cast<InitializeStmt*>(stmt)) {
-        context.types[initialize->name] = initialize->type;
-        context.values[initialize->name] = initialize->type == ValueType::List
-                                               ? Value::makeList()
-                                               : defaultValue(initialize->type);
+        declare(initialize->name, initialize->type, defaultValue(initialize->type));
         return;
     }
 
     if (auto* initialize = dynamic_cast<NamedInitializeStmt*>(stmt)) {
-        if (context.enums.count(initialize->typeName)) {
-            const EnumStmt& enumeration = *context.enums.at(initialize->typeName);
-            context.types[initialize->name] = ValueType::Enum;
-            context.classNames[initialize->name] = initialize->typeName;
-            context.values[initialize->name] = Value::makeEnum(
-                initialize->typeName, enumeration.members.front(), 0);
+        auto enumeration = context.enums.find(initialize->typeName);
+        if (enumeration != context.enums.end()) {
+            declare(initialize->name, ValueType::Enum,
+                    Value::makeEnum(initialize->typeName, enumeration->second->members.front(), 0),
+                    initialize->typeName);
             return;
         }
-
-        auto object = std::make_shared<ObjectInstance>();
-        object->className = initialize->typeName;
-        auto structure = context.structs.find(initialize->typeName);
-        if (structure != context.structs.end()) {
-            for (const auto& field : structure->second->fields) {
-                object->fields[field.name] = defaultValue(field.type);
-            }
-        } else {
-            std::vector<std::string> lineage;
-            std::string name = initialize->typeName;
-            while (!name.empty()) {
-                lineage.push_back(name);
-                name = context.classes.at(name)->baseName;
-            }
-            for (auto it = lineage.rbegin(); it != lineage.rend(); ++it) {
-                const ClassStmt& klass = *context.classes.at(*it);
-                for (const auto& field : klass.fields) {
-                    object->fields[field.name] = defaultValue(field.type);
-                }
-            }
-            invokeConstructor(object, *context.classes.at(initialize->typeName), {});
-        }
-        context.types[initialize->name] = ValueType::Object;
-        context.classNames[initialize->name] = initialize->typeName;
-        context.values[initialize->name] = Value::makeObject(std::move(object));
+        auto object = newObject(initialize->typeName);
+        auto klass = context.classes.find(initialize->typeName);
+        if (klass != context.classes.end()) invokeConstructor(object, *klass->second, {});
+        declare(initialize->name, ValueType::Object, Value::makeObject(std::move(object)),
+                initialize->typeName);
         return;
     }
 
     if (auto* instance = dynamic_cast<InstantiateStmt*>(stmt)) {
-        auto object = std::make_shared<ObjectInstance>();
-        object->className = instance->className;
-        std::vector<std::string> lineage;
-        std::string name = instance->className;
-        while (!name.empty()) {
-            lineage.push_back(name);
-            name = context.classes.at(name)->baseName;
-        }
-        for (auto it = lineage.rbegin(); it != lineage.rend(); ++it) {
-            const ClassStmt& klass = *context.classes.at(*it);
-            for (const auto& field : klass.fields) object->fields[field.name] = defaultValue(field.type);
-        }
         std::vector<Value> arguments;
         arguments.reserve(instance->arguments.size());
         for (const auto& argument : instance->arguments) arguments.push_back(eval(argument.get()));
+        auto object = newObject(instance->className);
         invokeConstructor(object, *context.classes.at(instance->className), arguments);
-        context.types[instance->name] = ValueType::Object;
-        context.classNames[instance->name] = instance->className;
-        context.values[instance->name] = Value::makeObject(std::move(object));
+        declare(instance->name, ValueType::Object, Value::makeObject(std::move(object)),
+                instance->className);
         return;
     }
 
     if (auto* assignment = dynamic_cast<AssignmentStmt*>(stmt)) {
-        if (context.constants.count(assignment->name)) {
+        const Value value = eval(assignment->expr.get());
+        const Slot slot = resolve(assignment->name);
+        if (!slot.value) {
+            throw std::runtime_error("variable or field '" + assignment->name + "' has not been initialized");
+        }
+        if (!slot.isField && slot.frame->constants.count(assignment->name)) {
             throw std::runtime_error("cannot assign to constant '" + assignment->name + "'");
         }
-        auto typeIt = context.types.find(assignment->name);
-        if (typeIt == context.types.end()) {
-            if (!activeObject || !activeObject->fields.count(assignment->name)) {
-                throw std::runtime_error("variable or field '" + assignment->name + "' has not been initialized");
-            }
-            const Value old = activeObject->fields.at(assignment->name);
-            activeObject->fields[assignment->name] = castTo(old.type, eval(assignment->expr.get()));
-            return;
-        }
-        const ValueType targetType = typeIt->second;
-        const Value assigned = castTo(targetType, eval(assignment->expr.get()));
-        context.values[assignment->name] = assigned;
+        *slot.value = assignTo(slot, assignment->name, value);
         return;
     }
 
     if (auto* assignment = dynamic_cast<MemberAssignmentStmt*>(stmt)) {
-        auto object = context.values.find(assignment->objectName);
-        if (object == context.values.end() || object->second.type != ValueType::Object ||
-            !object->second.object) {
+        const Value value = eval(assignment->expr.get());
+        const Slot slot = resolve(assignment->objectName);
+        if (!slot.value || slot.value->type != ValueType::Object || !slot.value->object) {
             throw std::runtime_error("'" + assignment->objectName + "' is not a class instance");
         }
-        const auto instance = object->second.object;
-        auto field = instance->fields.find(assignment->field);
-        if (field == instance->fields.end()) {
+        auto& fields = slot.value->object->fields;
+        auto field = fields.find(assignment->field);
+        if (field == fields.end()) {
             throw std::runtime_error("undefined field '" + assignment->field + "'");
         }
-        const ValueType fieldType = field->second.type;
-        const Value assigned = castTo(fieldType, eval(assignment->expr.get()));
-        field = instance->fields.find(assignment->field);
-        field->second = assigned;
+        field->second = castTo(field->second.type, value, "field '" + assignment->field + "'");
         return;
     }
 
     if (auto* mutation = dynamic_cast<ListMutationStmt*>(stmt)) {
-        if (context.constants.count(mutation->name)) {
+        const Value appended = mutation->value ? eval(mutation->value.get()) : Value{};
+        const Slot slot = resolve(mutation->name);
+        if (slot.value && !slot.isField && slot.frame->constants.count(mutation->name)) {
             throw std::runtime_error("cannot modify list constant '" + mutation->name + "'");
         }
-        const Value appended = mutation->value ? eval(mutation->value.get()) : Value{};
-        const auto list = context.values.find(mutation->name);
-        if (list == context.values.end() || list->second.type != ValueType::List ||
-            !list->second.list) {
-            throw std::runtime_error("'" + mutation->name + "' is not a list");
-        }
+        const auto list = listNamed(mutation->name);
         if (mutation->operation == ListMutationStmt::Operation::Append) {
-            list->second.list->push_back(appended);
+            list->push_back(appended);
         } else {
-            if (list->second.list->empty()) throw std::runtime_error("cannot remove item from an empty list");
-            list->second.list->pop_back();
+            if (list->empty()) throw std::runtime_error("cannot remove item from an empty list");
+            list->pop_back();
         }
         return;
     }
@@ -594,16 +605,14 @@ void Interpreter::exec(Stmt* stmt) {
     }
 
     if (auto* call = dynamic_cast<MethodCallStmt*>(stmt)) {
-        auto object = context.values.find(call->objectName);
-        if (object == context.values.end() || object->second.type != ValueType::Object ||
-            !object->second.object) {
-            throw std::runtime_error("'" + call->objectName + "' is not a class instance");
-        }
-        const auto instance = object->second.object;
         std::vector<Value> arguments;
         arguments.reserve(call->arguments.size());
         for (const auto& argument : call->arguments) arguments.push_back(eval(argument.get()));
-        invokeMethod(instance, call->method, arguments);
+        const Slot slot = resolve(call->objectName);
+        if (!slot.value || slot.value->type != ValueType::Object || !slot.value->object) {
+            throw std::runtime_error("'" + call->objectName + "' is not a class instance");
+        }
+        invokeMethod(slot.value->object, call->method, arguments);
         return;
     }
 
@@ -639,9 +648,6 @@ void Interpreter::exec(Stmt* stmt) {
     }
 
     if (auto* input = dynamic_cast<InputStmt*>(stmt)) {
-        if (context.constants.count(input->name)) {
-            throw std::runtime_error("cannot assign input to constant '" + input->name + "'");
-        }
         const Value prompt = eval(input->prompt.get());
         std::cout << prompt.toString() << std::flush;
 
@@ -650,17 +656,13 @@ void Interpreter::exec(Stmt* stmt) {
             throw std::runtime_error("failed to read input for '" + input->name + "'");
         }
 
-        ValueType targetType;
-        auto variable = context.types.find(input->name);
-        const bool isField = variable == context.types.end() && activeObject &&
-                             activeObject->fields.count(input->name);
-        if (isField) {
-            targetType = activeObject->fields.at(input->name).type;
-        } else if (variable != context.types.end()) {
-            targetType = variable->second;
-        } else {
-            throw std::runtime_error("ask target '" + input->name + "' is not declared");
+        const Slot slot = resolve(input->name);
+        if (!slot.value) throw std::runtime_error("ask target '" + input->name + "' is not declared");
+        if (!slot.isField && slot.frame->constants.count(input->name)) {
+            throw std::runtime_error("cannot assign input to constant '" + input->name + "'");
         }
+        const ValueType targetType =
+            slot.isField ? slot.value->type : slot.frame->types.at(input->name);
 
         Value converted;
         if (targetType == ValueType::String) {
@@ -696,48 +698,36 @@ void Interpreter::exec(Stmt* stmt) {
                 throw std::runtime_error("ask target '" + input->name + "' has an unsupported type");
             }
         }
-
-        if (isField) activeObject->fields[input->name] = std::move(converted);
-        else context.values[input->name] = std::move(converted);
+        *slot.value = std::move(converted);
         return;
     }
 
     if (auto* compound = dynamic_cast<AddToStmt*>(stmt)) {
-        if (context.constants.count(compound->name)) {
-            throw std::runtime_error("cannot modify constant '" + compound->name + "'");
-        }
-        auto typeIt = context.types.find(compound->name);
-        const bool isField = typeIt == context.types.end() && activeObject &&
-                             activeObject->fields.count(compound->name);
-        if (typeIt == context.types.end() && !isField) {
+        const Value amount = eval(compound->amount.get());
+        const Slot slot = resolve(compound->name);
+        if (!slot.value) {
             throw std::runtime_error("variable or field '" + compound->name + "' has not been initialized");
         }
-
-        const Value current = isField ? activeObject->fields.at(compound->name)
-                                      : context.values.at(compound->name);
-        const Value amount = eval(compound->amount.get());
-        const double a = asDouble(current);
-        const double b = asDouble(amount);
-        double result = a;
-
-        if (compound->op == "add") result = a + b;
-        else if (compound->op == "subtract") result = a - b;
-        else if (compound->op == "multiply") result = a * b;
-        else if (compound->op == "divide" || compound->op == "mod") {
-            if (std::fabs(b) < 1e-15) {
-                throw std::runtime_error(compound->op == "divide" ? "division by zero" : "modulo by zero");
-            }
-            result = compound->op == "divide" ? a / b : std::fmod(a, b);
+        if (!slot.isField && slot.frame->constants.count(compound->name)) {
+            throw std::runtime_error("cannot modify constant '" + compound->name + "'");
         }
-
+        const Value& current = *slot.value;
+        if (!numeric(current.type) || !numeric(amount.type)) {
+            throw std::runtime_error("'" + compound->op + "' requires numeric operands");
+        }
+        const std::string op = compoundOperator(compound->op);
         Value updated;
         if (current.type == ValueType::Int) {
-            updated = Value::makeInt(static_cast<long long>(result));
+            // Integer variables use exact integer arithmetic (with overflow checks).
+            if (amount.type != ValueType::Int) {
+                throw std::runtime_error("'" + compound->op + "' with a float amount cannot update int variable '" +
+                                         compound->name + "'");
+            }
+            updated = Value::makeInt(integerArithmetic(op, current.i, amount.i));
         } else {
-            updated = Value::makeFloat(result);
+            updated = Value::makeFloat(floatArithmetic(op, current.f, asDouble(amount)));
         }
-        if (isField) activeObject->fields[compound->name] = std::move(updated);
-        else context.values[compound->name] = std::move(updated);
+        *slot.value = std::move(updated);
         return;
     }
 
@@ -748,7 +738,7 @@ void Interpreter::exec(Stmt* stmt) {
     }
 
     if (auto* whileStmt = dynamic_cast<WhileStmt*>(stmt)) {
-        std::size_t guard = 0;
+        std::size_t iterations = 0;
         while (truth(eval(whileStmt->condition.get()))) {
             try {
                 execBlock(whileStmt->body.get());
@@ -756,18 +746,28 @@ void Interpreter::exec(Stmt* stmt) {
             } catch (const BreakSignal&) {
                 break;
             }
-            if (++guard > 10000000) throw std::runtime_error("possible infinite loop");
+            loopGuard(iterations);
         }
         return;
     }
 
     if (auto* repeat = dynamic_cast<RepeatStmt*>(stmt)) {
         const Value countValue = eval(repeat->count.get());
-        const long long count = countValue.type == ValueType::Int
-                                    ? countValue.i
-                                    : static_cast<long long>(countValue.f);
+        long long count = 0;
+        if (countValue.type == ValueType::Int) {
+            count = countValue.i;
+        } else if (countValue.type == ValueType::Float) {
+            if (!std::isfinite(countValue.f)) throw std::runtime_error("repeat count must be a finite number");
+            const double whole = std::trunc(countValue.f);
+            // Converting an out-of-range double to an integer is undefined behaviour.
+            count = whole >= 9.0e18 ? LLONG_MAX : (whole <= -9.0e18 ? LLONG_MIN : static_cast<long long>(whole));
+        } else {
+            throw std::runtime_error("repeat count must be a number");
+        }
         if (count < 0) throw std::runtime_error("repeat count cannot be negative");
+        std::size_t iterations = 0;
         for (long long k = 0; k < count; ++k) {
+            loopGuard(iterations);
             try {
                 execBlock(repeat->body.get());
             } catch (const ContinueSignal&) {
@@ -780,7 +780,7 @@ void Interpreter::exec(Stmt* stmt) {
 
     if (auto* forStmt = dynamic_cast<ForStmt*>(stmt)) {
         exec(forStmt->init.get());
-        std::size_t guard = 0;
+        std::size_t iterations = 0;
         while (truth(eval(forStmt->condition.get()))) {
             try {
                 execBlock(forStmt->body.get());
@@ -789,7 +789,7 @@ void Interpreter::exec(Stmt* stmt) {
                 break;
             }
             exec(forStmt->increment.get());
-            if (++guard > 10000000) throw std::runtime_error("possible infinite loop");
+            loopGuard(iterations);
         }
         return;
     }
@@ -799,35 +799,31 @@ void Interpreter::exec(Stmt* stmt) {
         if (collection.type != ValueType::List || !collection.list) {
             throw std::runtime_error("each-in loop requires a list");
         }
-        const bool hadType = context.types.count(each->name) != 0;
-        const bool hadValue = context.values.count(each->name) != 0;
-        const ValueType previousType = hadType ? context.types.at(each->name) : ValueType::Any;
-        const Value previousValue = hadValue ? context.values.at(each->name) : Value{};
-        context.types[each->name] = ValueType::Any;
-        std::size_t guard = 0;
-        try {
-            const std::vector<Value> items = *collection.list;
-            for (const Value& item : items) {
-                context.values[each->name] = item;
-                try {
-                    execBlock(each->body.get());
-                } catch (const ContinueSignal&) {
-                } catch (const BreakSignal&) {
-                    break;
-                }
-                if (++guard > 10000000) throw std::runtime_error("possible infinite loop");
+        Frame& scope = *frame;
+        const bool hadType = scope.types.count(each->name) != 0;
+        const bool hadValue = scope.values.count(each->name) != 0;
+        const ValueType previousType = hadType ? scope.types.at(each->name) : ValueType::Any;
+        const Value previousValue = hadValue ? scope.values.at(each->name) : Value{};
+        // The loop variable exists only inside the loop.
+        auto restore = onExit([&] {
+            if (hadType) scope.types[each->name] = previousType;
+            else scope.types.erase(each->name);
+            if (hadValue) scope.values[each->name] = previousValue;
+            else scope.values.erase(each->name);
+        });
+        scope.types[each->name] = ValueType::Any;
+        std::size_t iterations = 0;
+        const std::vector<Value> items = *collection.list;
+        for (const Value& item : items) {
+            scope.values[each->name] = item;
+            try {
+                execBlock(each->body.get());
+            } catch (const ContinueSignal&) {
+            } catch (const BreakSignal&) {
+                break;
             }
-        } catch (...) {
-            if (hadType) context.types[each->name] = previousType;
-            else context.types.erase(each->name);
-            if (hadValue) context.values[each->name] = previousValue;
-            else context.values.erase(each->name);
-            throw;
+            loopGuard(iterations);
         }
-        if (hadType) context.types[each->name] = previousType;
-        else context.types.erase(each->name);
-        if (hadValue) context.values[each->name] = previousValue;
-        else context.values.erase(each->name);
         return;
     }
 
@@ -844,7 +840,13 @@ void Interpreter::execBlock(BlockStmt* block) {
 }
 
 void Interpreter::run(const Program& program) {
+    const char marker = 0;
+    stackBase = reinterpret_cast<std::uintptr_t>(&marker);
     context = {};
+    frame = &context.globals;
+    activeObject.reset();
+    activeClass.clear();
+    callDepth = 0;
     for (const auto& stmt : program) {
         if (auto* klass = dynamic_cast<ClassStmt*>(stmt.get())) context.classes[klass->name] = klass;
         else if (auto* structure = dynamic_cast<StructStmt*>(stmt.get())) {

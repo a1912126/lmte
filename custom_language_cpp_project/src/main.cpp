@@ -9,12 +9,20 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <pthread.h>
 #include <sstream>
 #include <string>
 
+namespace {
+// The compiler runs on a thread with a large stack so that deeply recursive Plainspeak
+// programs get a clean "too many nested calls" error instead of crashing.
+constexpr std::size_t compilerStackSize = std::size_t{256} << 20;
+std::size_t interpreterStackBudget = std::size_t{4} << 20;
+}
+
 static std::string readFile(const std::string& path) {
     std::ifstream input(path);
-    if (!input) throw std::runtime_error("cannot open input file '" + path + "'");
+    if (!input) throw CompileError("cannot open input file '" + path + "'");
     return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
 }
 
@@ -39,7 +47,7 @@ static void printTokens(const std::vector<Token>& tokens) {
     std::cout << '\n';
 }
 
-int main(int argc, char** argv) {
+static int compileAndRun(int argc, char** argv) {
     if (argc < 2) {
         printUsage();
         return 1;
@@ -62,7 +70,13 @@ int main(int argc, char** argv) {
         }
     }
 
+    // True once the program has passed every check and the interpreter is running.
+    bool running = false;
     try {
+        if (sourcePath.empty()) {
+            printUsage();
+            return 1;
+        }
         if (!hasPskExtension(sourcePath)) {
             throw CompileError("source files must use the '.psk' extension");
         }
@@ -97,14 +111,53 @@ int main(int argc, char** argv) {
         }
 
         Interpreter interpreter;
+        interpreter.setStackBudget(interpreterStackBudget);
+        running = true;
         interpreter.run(program);
     } catch (const CompileError& error) {
         std::cerr << "ERROR: " << error.what() << '\n';
         return 1;
     } catch (const std::exception& error) {
+        if (!running) {
+            // Any other exception before the program runs is a bug in the compiler itself,
+            // not a run-time error in the user's program.
+            std::cerr << "ERROR: internal compiler error: " << error.what() << '\n';
+            return 1;
+        }
         std::cerr << "RUNTIME ERROR: " << error.what() << '\n';
         return 2;
     }
 
     return 0;
+}
+
+namespace {
+struct MainArguments {
+    int argc;
+    char** argv;
+    int result;
+};
+
+void* compileAndRunThread(void* data) {
+    auto* arguments = static_cast<MainArguments*>(data);
+    arguments->result = compileAndRun(arguments->argc, arguments->argv);
+    return nullptr;
+}
+}
+
+int main(int argc, char** argv) {
+    MainArguments arguments{argc, argv, 1};
+    pthread_attr_t attributes;
+    pthread_t thread;
+    if (pthread_attr_init(&attributes) == 0 &&
+        pthread_attr_setstacksize(&attributes, compilerStackSize) == 0 &&
+        pthread_create(&thread, &attributes, compileAndRunThread, &arguments) == 0) {
+        pthread_attr_destroy(&attributes);
+        // Leave a generous margin below the thread's stack size.
+        interpreterStackBudget = compilerStackSize - (std::size_t{32} << 20);
+        pthread_join(thread, nullptr);
+        return arguments.result;
+    }
+    // Could not create the thread: run on the main thread with a conservative budget.
+    return compileAndRun(argc, argv);
 }

@@ -81,7 +81,7 @@ std::vector<Token> Lexer::tokenize() {
                     else if (e == '"') { advance(); text += '"'; }
                     else if (e == '\\') { advance(); text += '\\'; }
                     else {
-                        if (e == '\0') throw CompileError("Line " + std::to_string(p.line) + ": unterminated string literal");
+                        if (e == '\0') throw CompileError("Line " + std::to_string(p.line) + ", column " + std::to_string(p.column) + ": unterminated string literal");
                         text += advance();
                     }
                 } else {
@@ -90,7 +90,7 @@ std::vector<Token> Lexer::tokenize() {
             }
 
             if (peek() != '"') {
-                throw CompileError("Line " + std::to_string(p.line) + ": unterminated string literal");
+                throw CompileError("Line " + std::to_string(p.line) + ", column " + std::to_string(p.column) + ": unterminated string literal");
             }
             advance();
             addToken(tokens, TokenType::String, text, p);
@@ -120,7 +120,7 @@ std::vector<Token> Lexer::tokenize() {
             case ';': type = TokenType::Semicolon; break;
             case ',': type = TokenType::Comma; break;
             default:
-                throw CompileError("Line " + std::to_string(p.line) + ": unexpected character '" + std::string(1, c) + "'");
+                throw CompileError("Line " + std::to_string(p.line) + ", column " + std::to_string(p.column) + ": unexpected character '" + std::string(1, c) + "'");
         }
 
         advance();

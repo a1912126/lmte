@@ -1,0 +1,14 @@
+define class Bag {
+    public initialize list items
+    public define function addTwo() returning nothing {
+        put 1 on items
+        put 2 on items
+        say length of items
+        say item of items at 1
+        remove item of items
+        say top of items
+    }
+}
+Initialize Bag b
+call addTwo() from b
+call addTwo() from b

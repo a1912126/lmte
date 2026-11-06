@@ -1,0 +1,7 @@
+define class Dog { public initialize integer age
+  public define function speak() returning nothing { say "woof" } }
+define class Cat { public initialize string colour
+  public define function speak() returning nothing { say "meow" } }
+Initialize Dog d
+Initialize Cat c
+set d to c

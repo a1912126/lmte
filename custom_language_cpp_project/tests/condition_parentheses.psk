@@ -1,0 +1,5 @@
+int x = 2
+int y = 3
+if (x > 1) and (y > 1) { say "both" }
+while (x + y) * 2 > 12 { add 1 to x }
+if (x + y) * 2 > 9 { say "grouped" }

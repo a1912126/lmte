@@ -20,6 +20,7 @@ class Parser {
     const Token& consumeWord(const std::string& word, const std::string& message);
     [[noreturn]] void errorAtCurrent(const std::string& message) const;
     [[noreturn]] void errorAt(const Token& token, const std::string& message) const;
+    void requireName(const Token& token, const std::string& what) const;
 
     static bool isTypeWord(const std::string& word);
     static ValueType parseTypeWord(const std::string& word);
@@ -35,6 +36,7 @@ class Parser {
     std::unique_ptr<BlockStmt> parseBlock();
     StmtPtr parseIf();
     ExprPtr parseNaturalCondition();
+    ExprPtr parseNaturalComparison();
     StmtPtr parseWhile();
     StmtPtr parseRepeat();
     StmtPtr parseFor();

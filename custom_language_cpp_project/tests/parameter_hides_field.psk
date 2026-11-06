@@ -1,0 +1,6 @@
+define class P {
+    public initialize string name
+    public define constructor {string name} { set name to name }
+}
+Initialize P p with ("Ada")
+say name of p

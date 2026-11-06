@@ -1,0 +1,3 @@
+define class Base { public define constructor {integer v} { say v } }
+define class Child inherits Base { public define constructor {} { say "child" } }
+Initialize Child c

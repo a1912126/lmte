@@ -1,0 +1,10 @@
+define class Animal { public define function speak() returning nothing { say "..." } }
+define class Dog inherits Animal { public define function speak() returning nothing { say "woof" } }
+Initialize Animal a
+Initialize Dog d
+set a to d
+call speak() from a
+initialize list pets
+put a on pets
+if item of pets at 0 == d { say "same object" }
+if pets == pets { say "same list" }

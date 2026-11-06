@@ -1,0 +1,6 @@
+int a = 9007199254740993
+int b = 9007199254740992
+if a > b { say "correct" } else { say "WRONG" }
+if 9007199254740993 > 9007199254740992 { say "correct" } else { say "WRONG" }
+add 2 to a
+say a

@@ -1,0 +1,3 @@
+define class A inherits B {}
+define class B inherits C {}
+define class C inherits B {}

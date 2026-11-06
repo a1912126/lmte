@@ -1,0 +1,5 @@
+define class Child inherits Middle {
+    public define constructor {} { super() }
+}
+define class Middle inherits Missing {
+}

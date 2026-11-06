@@ -141,6 +141,14 @@ std::optional<Value> evaluateConstant(const Expr* expression) {
     if (binary->op == "<" || binary->op == "<=" ||
         binary->op == ">" || binary->op == ">=") {
         bool result = false;
+        if (bothIntegers) {
+            // Compare integers exactly: doubles cannot hold every value above 2^53.
+            if (binary->op == "<") result = left->i < right->i;
+            else if (binary->op == "<=") result = left->i <= right->i;
+            else if (binary->op == ">") result = left->i > right->i;
+            else result = left->i >= right->i;
+            return Value::makeBool(result);
+        }
         if (binary->op == "<") result = a < b;
         else if (binary->op == "<=") result = a <= b;
         else if (binary->op == ">") result = a > b;
@@ -278,6 +286,10 @@ void optimizeStatement(StmtPtr& statement) {
         optimizeBlock(block);
     }
 }
+}
+
+std::optional<Value> evaluateConstantExpression(const Expr* expression) {
+    return evaluateConstant(expression);
 }
 
 void optimizeProgram(Program& program) {
