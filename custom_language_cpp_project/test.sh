@@ -2,7 +2,38 @@
 set -u
 
 make -s clean
-make -s
+make -s || { echo "FAIL: build"; exit 1; }
+
+# A build without LLVM (see Makefile) cannot run the --llvm-ir checks; skip them.
+llvmAvailable=1
+if ./customlang tests/llvm_backend.psk --llvm-ir 2>&1 >/dev/null | grep -q "compiled without LLVM"; then
+    llvmAvailable=0
+fi
+
+# expect_output <file> <expected stdout>: the program must run (exit 0) and print exactly this.
+expect_output() {
+    local actual
+    actual="$(./customlang "$1" 2>&1)"
+    local status=$?
+    if [[ $status -ne 0 || "$actual" != "$2" ]]; then
+        echo "FAIL: $1 (exit $status)"
+        printf 'Expected:\n%s\nActual:\n%s\n' "$2" "$actual"
+        exit 1
+    fi
+}
+
+# expect_error <file> <exit code> <message fragment>: the program must fail with this
+# exit code (1 = compile error, 2 = run-time error) and mention the fragment.
+expect_error() {
+    local actual
+    actual="$(./customlang "$1" 2>&1)"
+    local status=$?
+    if [[ $status -ne $2 ]] || ! grep -Fq -- "$3" <<<"$actual"; then
+        echo "FAIL: $1 should exit $2 with an error containing: $3"
+        printf 'Actual (exit %s):\n%s\n' "$status" "$actual"
+        exit 1
+    fi
+}
 
 expected=$'hello\nchanged'
 actual="$(./customlang tests/string_variable.psk)"
@@ -167,17 +198,48 @@ if ./customlang tests/input_undeclared.psk >/dev/null 2>&1; then
     exit 1
 fi
 
-llvmOutput="$(./customlang tests/llvm_backend.psk --llvm-ir)" || {
-    echo "FAIL: LLVM backend should compile and optimize the scalar test"
-    exit 1
-}
-if ! grep -q 'define .*i32 @main' <<<"$llvmOutput"; then
-    echo "FAIL: LLVM IR output is missing the generated main function"
-    exit 1
+if [[ $llvmAvailable -eq 1 ]]; then
+    llvmOutput="$(./customlang tests/llvm_backend.psk --llvm-ir)" || {
+        echo "FAIL: LLVM backend should compile and optimize the scalar test"
+        exit 1
+    }
+    if ! grep -q 'define .*i32 @main' <<<"$llvmOutput"; then
+        echo "FAIL: LLVM IR output is missing the generated main function"
+        exit 1
+    fi
+    if ! grep -q 'i64 5' <<<"$llvmOutput" || grep -q 'unreachable branch' <<<"$llvmOutput"; then
+        echo "FAIL: LLVM O2 pipeline did not fold constants and remove dead branch"
+        exit 1
+    fi
+else
+    echo "SKIP: LLVM backend tests (this build was compiled without LLVM)"
 fi
-if ! grep -q 'i64 5' <<<"$llvmOutput" || grep -q 'unreachable branch' <<<"$llvmOutput"; then
-    echo "FAIL: LLVM O2 pipeline did not fold constants and remove dead branch"
-    exit 1
-fi
+
+# Regression tests for the Plainspeak bug report (numbers refer to its issues).
+expect_output tests/scope_function_globals.psk $'1\n5\n7'                       # 1, 5
+expect_error tests/inheritance_cycle.psk 1 "inheritance cycle involving class 'B'"  # 2
+expect_error tests/missing_grandparent.psk 1 "base class 'Missing' is not declared" # 3
+expect_error tests/integer_overflow.psk 2 "integer overflow"                         # 4
+expect_error tests/loop_counter_redeclared.psk 1 "variable 'i' already declared"     # 6
+expect_output tests/loop_counter_reuse.psk $'0\n1\n0\n1'                          # 6
+expect_error tests/block_variable_after_block.psk 1 "declared inside a block"        # 7
+expect_error tests/local_reuses_global.psk 1 "already declared as a global"          # 8
+expect_error tests/global_used_before_declared.psk 1 "global variable 'later' is used by function 'f' before it is declared" # 9
+expect_error tests/object_assignment_class.psk 1 "cannot assign Cat to Dog variable 'd'" # 10
+expect_output tests/object_assignment_subclass.psk $'woof\nsame object\nsame list' # 10, 12
+expect_output tests/large_integers.psk $'correct\ncorrect\n9007199254740995'      # 11, 13
+expect_error tests/compound_float_into_int.psk 1 "cannot update int variable 'x'"   # 13
+expect_error tests/parameter_hides_field.psk 1 "same name as a field of class 'P'"  # 14
+expect_error tests/else_if.psk 1 "'else if' is not supported"                       # 15
+expect_output tests/condition_parentheses.psk $'both\ngrouped'                     # 16
+expect_error tests/english_comparison_and.psk 1 "English comparison must be the whole condition" # 17
+expect_output tests/list_field_in_method.psk $'2\n2\n1\n3\n1\n1'               # 18
+expect_output tests/implicit_super.psk $'child\n5'                                 # 19
+expect_error tests/super_required.psk 1 "must call super(...)"                      # 19
+expect_error tests/literal_out_of_range.psk 1 "Line 1, column 5: integer literal out of range" # 21
+expect_error tests/constant_integer_division_by_zero.psk 1 "division by constant zero" # 22
+expect_error tests/reserved_word.psk 1 "'true' is a reserved word"                  # 23
+expect_error tests/recursion_limit.psk 2 "too many nested calls"
+expect_error tests/non_boolean_condition.psk 2 "condition must be a boolean"
 
 echo "PASS: all tests"

@@ -1,0 +1,6 @@
+# Build outputs (rebuild with make)
+*.o
+*.d
+/customlang
+/build/
+.DS_Store

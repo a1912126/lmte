@@ -1,0 +1,3 @@
+define function f() returning integer { return later }
+say f()
+int later = 5

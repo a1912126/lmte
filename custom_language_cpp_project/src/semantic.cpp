@@ -1,34 +1,27 @@
 #include "semantic.hpp"
 #include "common.hpp"
+#include "optimizer.hpp"
 #include <algorithm>
 #include <cmath>
 #include <optional>
 
 namespace {
-std::optional<long double> constantNumber(const Expr* expression) {
-    if (auto* literal = dynamic_cast<const LiteralExpr*>(expression)) {
-        if (literal->value.type == ValueType::Int) return literal->value.i;
-        if (literal->value.type == ValueType::Float) return literal->value.f;
-        return std::nullopt;
-    }
-    if (auto* unary = dynamic_cast<const UnaryExpr*>(expression)) {
-        auto value = constantNumber(unary->expr.get());
-        if (!value) return std::nullopt;
-        if (unary->op == "+") return value;
-        if (unary->op == "-") return -*value;
-        return std::nullopt;
-    }
-    auto* binary = dynamic_cast<const BinaryExpr*>(expression);
-    if (!binary) return std::nullopt;
-    auto left = constantNumber(binary->left.get());
-    auto right = constantNumber(binary->right.get());
-    if (!left || !right) return std::nullopt;
-    if (binary->op == "+") return *left + *right;
-    if (binary->op == "-") return *left - *right;
-    if (binary->op == "*") return *left * *right;
-    if (binary->op == "/" && *right != 0.0L) return *left / *right;
-    if (binary->op == "mod" && *right != 0.0L) return std::fmod(*left, *right);
-    return std::nullopt;
+std::string functionKey(const std::string& name) { return "function '" + name + "'"; }
+std::string methodKey(const std::string& className, const std::string& method) {
+    return "method '" + method + "' of class '" + className + "'";
+}
+std::string constructorKey(const std::string& className) {
+    return "the constructor of class '" + className + "'";
+}
+
+bool isConstantZero(const Expr* expression) {
+    // Uses the optimizer's evaluator, so integer expressions use integer division:
+    // (1 / 2) is 0, exactly as at run time.
+    const auto value = evaluateConstantExpression(expression);
+    if (!value) return false;
+    if (value->type == ValueType::Int) return value->i == 0;
+    if (value->type == ValueType::Float) return std::fabs(value->f) < 1e-15;
+    return false;
 }
 }
 
@@ -36,27 +29,38 @@ std::optional<long double> constantNumber(const Expr* expression) {
     throw CompileError("Semantic error: " + message);
 }
 
+[[noreturn]] void SemanticAnalyzer::undeclared(const std::string& name,
+                                               const std::string& message) const {
+    if (retiredNames.count(name)) {
+        error("variable '" + name + "' was declared inside a block and cannot be used after "
+              "that block ends (the block may not have run); declare it before the block instead");
+    }
+    error(message);
+}
+
 bool SemanticAnalyzer::isNumeric(ValueType type) const {
     return type == ValueType::Int || type == ValueType::Float;
 }
 
 bool SemanticAnalyzer::assignable(ValueType target, ValueType source) const {
+    if (source == ValueType::Void) return false;
     return target == source || target == ValueType::Any || source == ValueType::Any ||
            (target == ValueType::Float && source == ValueType::Int);
 }
 
 const ClassField* SemanticAnalyzer::findField(
     const std::string& className, const std::string& field, std::string* declaringClass) const {
-    auto classIt = classes.find(className);
-    if (classIt == classes.end()) return nullptr;
-    for (const auto& candidate : classIt->second->fields) {
-        if (candidate.name == field) {
-            if (declaringClass) *declaringClass = className;
-            return &candidate;
+    std::string name = className;
+    for (std::size_t depth = 0; !name.empty() && depth <= classes.size(); ++depth) {
+        auto classIt = classes.find(name);
+        if (classIt == classes.end()) return nullptr;
+        for (const auto& candidate : classIt->second->fields) {
+            if (candidate.name == field) {
+                if (declaringClass) *declaringClass = name;
+                return &candidate;
+            }
         }
-    }
-    if (!classIt->second->baseName.empty()) {
-        return findField(classIt->second->baseName, field, declaringClass);
+        name = classIt->second->baseName;
     }
     return nullptr;
 }
@@ -77,26 +81,100 @@ const ClassField* SemanticAnalyzer::findObjectField(
 
 const ClassMethod* SemanticAnalyzer::findMethod(
     const std::string& className, const std::string& method, std::string* declaringClass) const {
-    auto classIt = classes.find(className);
-    if (classIt == classes.end()) return nullptr;
-    for (const auto& candidate : classIt->second->methods) {
-        if (candidate.name == method) {
-            if (declaringClass) *declaringClass = className;
-            return &candidate;
+    std::string name = className;
+    for (std::size_t depth = 0; !name.empty() && depth <= classes.size(); ++depth) {
+        auto classIt = classes.find(name);
+        if (classIt == classes.end()) return nullptr;
+        for (const auto& candidate : classIt->second->methods) {
+            if (candidate.name == method) {
+                if (declaringClass) *declaringClass = name;
+                return &candidate;
+            }
         }
+        name = classIt->second->baseName;
     }
-    if (!classIt->second->baseName.empty()) {
-        return findMethod(classIt->second->baseName, method, declaringClass);
+    return nullptr;
+}
+
+// The class whose constructor runs when 'className' is constructed: the class itself,
+// or its nearest ancestor that defines a constructor. Null if none does.
+const ClassStmt* SemanticAnalyzer::constructorClassFrom(const std::string& className) const {
+    std::string name = className;
+    for (std::size_t depth = 0; !name.empty() && depth <= classes.size(); ++depth) {
+        auto classIt = classes.find(name);
+        if (classIt == classes.end()) return nullptr;
+        if (classIt->second->hasConstructor) return classIt->second;
+        name = classIt->second->baseName;
     }
     return nullptr;
 }
 
 bool SemanticAnalyzer::derivesFrom(
     const std::string& className, const std::string& baseName) const {
-    if (className == baseName) return true;
-    auto it = classes.find(className);
-    return it != classes.end() && !it->second->baseName.empty() &&
-           derivesFrom(it->second->baseName, baseName);
+    std::string name = className;
+    for (std::size_t depth = 0; !name.empty() && depth <= classes.size(); ++depth) {
+        if (name == baseName) return true;
+        auto it = classes.find(name);
+        if (it == classes.end()) return false;
+        name = it->second->baseName;
+    }
+    return false;
+}
+
+bool SemanticAnalyzer::isSubtype(const std::string& source, const std::string& target) const {
+    return source == target ||
+           (classes.count(source) && classes.count(target) && derivesFrom(source, target));
+}
+
+void SemanticAnalyzer::noteName(const std::string& name) const {
+    if (!currentCallable.empty() && functionGlobals.count(name)) {
+        callableGlobals[currentCallable].insert(name);
+    }
+}
+
+void SemanticAnalyzer::noteCall(const std::string& callable) const {
+    if (currentCallable.empty()) topLevelCalls.insert(callable);
+    else callableCalls[currentCallable].insert(callable);
+}
+
+void SemanticAnalyzer::noteMethodCall(const std::string& className,
+                                      const std::string& method) const {
+    // Dynamic dispatch: the object may be of the declared class or any subclass.
+    std::string owner;
+    if (findMethod(className, method, &owner)) noteCall(methodKey(owner, method));
+    for (const auto& [name, definition] : classes) {
+        if (name == className || !derivesFrom(name, className)) continue;
+        for (const auto& candidate : definition->methods) {
+            if (candidate.name == method) noteCall(methodKey(name, method));
+        }
+    }
+}
+
+void SemanticAnalyzer::checkGlobalsDeclared(
+    const std::unordered_set<std::string>& available) const {
+    for (const auto& call : topLevelCalls) {
+        std::set<std::string> visited;
+        std::vector<std::string> pending{call};
+        while (!pending.empty()) {
+            const std::string callable = pending.back();
+            pending.pop_back();
+            if (!visited.insert(callable).second) continue;
+            auto globals = callableGlobals.find(callable);
+            if (globals != callableGlobals.end()) {
+                for (const auto& global : globals->second) {
+                    if (!available.count(global)) {
+                        error("global variable '" + global + "' is used by " + callable +
+                              " before it is declared; declare '" + global +
+                              "' above the first call");
+                    }
+                }
+            }
+            auto calls = callableCalls.find(callable);
+            if (calls != callableCalls.end()) {
+                pending.insert(pending.end(), calls->second.begin(), calls->second.end());
+            }
+        }
+    }
 }
 
 std::string SemanticAnalyzer::enumTypeOf(const Expr* expr) const {
@@ -117,13 +195,27 @@ std::string SemanticAnalyzer::enumTypeOf(const Expr* expr) const {
     return {};
 }
 
+// Checks that 'name' is a list: a list variable, or (inside a class) an accessible list field.
+void SemanticAnalyzer::requireList(const std::string& name) const {
+    const auto variable = declared.find(name);
+    if (variable != declared.end()) {
+        if (variable->second != ValueType::List) error("'" + name + "' is not a declared list");
+        noteName(name);
+        return;
+    }
+    std::string owner;
+    const ClassField* field = currentClass.empty() ? nullptr : findField(currentClass, name, &owner);
+    if (field && (field->isPublic || owner == currentClass)) {
+        if (field->type != ValueType::List) error("'" + name + "' is not a declared list");
+        return;
+    }
+    undeclared(name, "'" + name + "' is not a declared list");
+}
+
 ValueType SemanticAnalyzer::exprType(const Expr* expr) const {
     if (auto* literal = dynamic_cast<const LiteralExpr*>(expr)) return literal->value.type;
     if (auto* list = dynamic_cast<const ListExpr*>(expr)) {
-        const auto variable = declared.find(list->name);
-        if (variable == declared.end() || variable->second != ValueType::List) {
-            error("'" + list->name + "' is not a declared list");
-        }
+        requireList(list->name);
         if (list->operation == ListExpr::Operation::Length) return ValueType::Int;
         if (list->operation == ListExpr::Operation::Index &&
             exprType(list->index.get()) != ValueType::Int) {
@@ -137,10 +229,15 @@ ValueType SemanticAnalyzer::exprType(const Expr* expr) const {
         if (function->second->parameters.size() != call->arguments.size()) {
             error("wrong number of arguments for function '" + call->name + "'");
         }
+        noteCall(functionKey(call->name));
         std::unordered_map<std::string, ValueType> genericBindings;
         for (std::size_t i = 0; i < call->arguments.size(); ++i) {
             const Parameter& parameter = function->second->parameters[i];
             const ValueType argumentType = exprType(call->arguments[i].get());
+            if (argumentType == ValueType::Void) {
+                error("cannot pass the result of a nothing-returning function to '" +
+                      call->name + "'");
+            }
             if (!parameter.genericType.empty()) {
                 auto binding = genericBindings.find(parameter.genericType);
                 if (binding == genericBindings.end() || binding->second == ValueType::Any) {
@@ -165,20 +262,27 @@ ValueType SemanticAnalyzer::exprType(const Expr* expr) const {
     }
     if (auto* variable = dynamic_cast<const VariableExpr*>(expr)) {
         auto it = declared.find(variable->name);
-        if (it != declared.end()) return it->second;
+        if (it != declared.end()) {
+            noteName(variable->name);
+            return it->second;
+        }
         std::string owner;
         const ClassField* field = currentClass.empty()
                                       ? nullptr
                                       : findField(currentClass, variable->name, &owner);
         if (field && (field->isPublic || owner == currentClass)) return field->type;
         if (!enumTypeOf(variable).empty()) return ValueType::Enum;
-        error("variable or field '" + variable->name + "' used before declaration");
+        undeclared(variable->name,
+                   "variable or field '" + variable->name + "' used before declaration");
     }
     if (auto* member = dynamic_cast<const MemberExpr*>(expr)) {
         auto* objectExpr = dynamic_cast<const VariableExpr*>(member->object.get());
         if (!objectExpr) error("field access requires an object variable");
         auto classIt = declaredClasses.find(objectExpr->name);
-        if (classIt == declaredClasses.end()) error("'" + objectExpr->name + "' is not a class instance");
+        if (classIt == declaredClasses.end()) {
+            undeclared(objectExpr->name, "'" + objectExpr->name + "' is not a class instance");
+        }
+        noteName(objectExpr->name);
         std::string owner;
         const ClassField* field = findObjectField(classIt->second, member->field, &owner);
         if (!field) error("type '" + classIt->second + "' has no field '" + member->field + "'");
@@ -193,12 +297,16 @@ ValueType SemanticAnalyzer::exprType(const Expr* expr) const {
             if (type != ValueType::Bool && type != ValueType::Any) error("'not' requires a boolean expression");
             return ValueType::Bool;
         }
+        if (type == ValueType::Any) return ValueType::Any;
         if (!isNumeric(type)) error("unary '" + unary->op + "' requires a numeric expression");
         return type;
     }
     if (auto* binary = dynamic_cast<const BinaryExpr*>(expr)) {
         ValueType left = exprType(binary->left.get());
         ValueType right = exprType(binary->right.get());
+        if (left == ValueType::Void || right == ValueType::Void) {
+            error("the result of a nothing-returning function cannot be used in an expression");
+        }
         if (binary->op == "and" || binary->op == "or") {
             if ((left != ValueType::Bool && left != ValueType::Any) ||
                 (right != ValueType::Bool && right != ValueType::Any)) {
@@ -215,12 +323,8 @@ ValueType SemanticAnalyzer::exprType(const Expr* expr) const {
                 (!isNumeric(right) && right != ValueType::Any)) {
                 error("operator '" + binary->op + "' requires numeric operands");
             }
-            if (binary->op == "/" || binary->op == "mod") {
-                const auto divisor = constantNumber(binary->right.get());
-                if (divisor && std::fabs(*divisor) < 1e-15L) {
-                    error(binary->op == "/" ? "division by constant zero"
-                                               : "modulo by constant zero");
-                }
+            if ((binary->op == "/" || binary->op == "mod") && isConstantZero(binary->right.get())) {
+                error(binary->op == "/" ? "division by constant zero" : "modulo by constant zero");
             }
             if (left == ValueType::Any || right == ValueType::Any) return ValueType::Any;
             return left == ValueType::Float || right == ValueType::Float
@@ -271,7 +375,12 @@ std::string SemanticAnalyzer::genericExprType(const Expr* expr) const {
 void SemanticAnalyzer::validateAssignmentType(
     ValueType target, const Expr* expr, const std::string& name) const {
     const ValueType source = exprType(expr);
+    if (source == ValueType::Void) {
+        error("cannot assign the result of a nothing-returning function to '" + name + "'");
+    }
     if (target == ValueType::String) {
+        // The deliberate string rule (User Guide 5.4): only a quoted literal or another
+        // string variable can be assigned to a string.
         const auto* literal = dynamic_cast<const LiteralExpr*>(expr);
         const auto* variable = dynamic_cast<const VariableExpr*>(expr);
         if ((literal && literal->value.type == ValueType::String) ||
@@ -288,24 +397,104 @@ void SemanticAnalyzer::validateAssignmentType(
     }
 }
 
+// An object variable may only hold an object of its declared class or a subclass.
+void SemanticAnalyzer::validateObjectAssignment(const std::string& name, const Expr* expr) const {
+    const std::string& target = declaredClasses.at(name);
+    const ValueType source = exprType(expr);
+    if (source == ValueType::Any) return;  // a list item: checked at run time
+    if (source != ValueType::Object) {
+        error("cannot assign " + typeName(source) + " to " + target + " variable '" + name + "'");
+    }
+    const auto* variable = dynamic_cast<const VariableExpr*>(expr);
+    auto sourceClass = variable ? declaredClasses.find(variable->name) : declaredClasses.end();
+    if (sourceClass == declaredClasses.end()) {
+        error("cannot assign this value to " + target + " variable '" + name + "'");
+    }
+    if (!isSubtype(sourceClass->second, target)) {
+        error("cannot assign " + sourceClass->second + " to " + target + " variable '" + name +
+              "'" + (classes.count(target) ? " (only " + target + " or a subclass of it is allowed)"
+                                           : ""));
+    }
+}
+
 ValueType SemanticAnalyzer::inputTargetType(const std::string& name) const {
     auto variable = declared.find(name);
-    if (variable != declared.end()) return variable->second;
+    if (variable != declared.end()) {
+        noteName(name);
+        return variable->second;
+    }
 
     std::string owner;
     const ClassField* field = currentClass.empty() ? nullptr : findField(currentClass, name, &owner);
     if (field && (field->isPublic || owner == currentClass)) return field->type;
-    error("ask target '" + name + "' must be a declared variable");
+    undeclared(name, "ask target '" + name + "' must be a declared variable");
+}
+
+void SemanticAnalyzer::checkNotField(const std::string& name, const std::string& kind) const {
+    if (currentClass.empty()) return;
+    std::string owner;
+    if (findField(currentClass, name, &owner)) {
+        error(kind + " '" + name + "' has the same name as a field of class '" + owner +
+              "', which it would hide; give it a different name");
+    }
+}
+
+void SemanticAnalyzer::declareName(const std::string& name, ValueType type,
+                                   const std::string& hint) {
+    if (retiredNames.count(name)) {
+        error("variable '" + name + "' already declared inside an earlier block; blocks do not "
+              "create a new scope, so the name cannot be reused");
+    }
+    if (declared.count(name)) {
+        if (functionGlobals.count(name)) {
+            error("variable '" + name + "' is already declared as a global variable; a local "
+                  "variable cannot reuse a global name");
+        }
+        error("variable '" + name + "' already declared" + hint);
+    }
+    checkNotField(name, "local variable");
+    declared[name] = type;
+    if (!blockScopes.empty()) blockScopes.back().push_back(name);
+}
+
+void SemanticAnalyzer::analyzeBlock(BlockStmt* block) {
+    if (!block) return;
+    blockScopes.emplace_back();
+    for (auto& child : block->statements) statement(child.get());
+    const std::vector<std::string> names = std::move(blockScopes.back());
+    blockScopes.pop_back();
+    for (const auto& name : names) {
+        declared.erase(name);
+        declaredClasses.erase(name);
+        declaredEnums.erase(name);
+        fixedVariables.erase(name);
+        retiredNames.insert(name);
+    }
+}
+
+void SemanticAnalyzer::validateHierarchy(const Program& program) {
+    // Check every base class exists, then reject cycles, before anything walks the
+    // hierarchy (which would otherwise recurse forever or look up a missing class).
+    for (const auto& stmt : program) {
+        auto* klass = dynamic_cast<const ClassStmt*>(stmt.get());
+        if (!klass || klass->baseName.empty() || classes.count(klass->baseName)) continue;
+        if (structs.count(klass->baseName) || enums.count(klass->baseName)) {
+            error("class '" + klass->name + "' cannot inherit from '" + klass->baseName +
+                  "' because it is not a class");
+        }
+        error("base class '" + klass->baseName + "' is not declared");
+    }
+    for (const auto& stmt : program) {
+        auto* klass = dynamic_cast<const ClassStmt*>(stmt.get());
+        if (!klass) continue;
+        std::unordered_set<std::string> seen;
+        for (std::string name = klass->name; !name.empty(); name = classes.at(name)->baseName) {
+            if (!seen.insert(name).second) error("inheritance cycle involving class '" + name + "'");
+        }
+    }
 }
 
 void SemanticAnalyzer::validateClass(const ClassStmt& klass) {
-    if (!klass.baseName.empty() && classes.count(klass.baseName) == 0) {
-        error("base class '" + klass.baseName + "' is not declared");
-    }
-    if (derivesFrom(klass.baseName, klass.name)) {
-        error("inheritance cycle involving class '" + klass.name + "'");
-    }
-
     std::unordered_map<std::string, bool> fieldNames;
     for (const auto& field : klass.fields) {
         if (!fieldNames.emplace(field.name, true).second ||
@@ -353,10 +542,33 @@ void SemanticAnalyzer::validateClass(const ClassStmt& klass) {
         }
     }
 
+    if (klass.hasConstructor && !klass.baseName.empty()) {
+        const auto& statements = klass.constructorBody->statements;
+        const bool explicitSuper = !statements.empty() &&
+            dynamic_cast<const SuperConstructorCallStmt*>(statements.front().get()) != nullptr;
+        const ClassStmt* inherited = constructorClassFrom(klass.baseName);
+        // Without super(...), the inherited constructor is run automatically, which is
+        // only possible when it takes no arguments.
+        if (!explicitSuper && inherited && !inherited->constructorParameters.empty()) {
+            error("the constructor of class '" + klass.name + "' must call super(...) as its "
+                  "first statement, because the constructor of class '" + inherited->name +
+                  "' requires arguments");
+        }
+    }
+    // Constructing a class always runs its ancestors' constructors too.
+    if (!klass.baseName.empty()) {
+        callableCalls[constructorKey(klass.name)].insert(constructorKey(klass.baseName));
+    }
+
     const auto savedDeclared = declared;
     const auto savedClasses = declaredClasses;
     const auto savedEnums = declaredEnums;
     const auto savedFixedVariables = fixedVariables;
+    const auto savedGenericTypes = declaredGenericTypes;
+    const auto savedRetired = retiredNames;
+    const auto savedBlockScopes = blockScopes;
+    const auto savedFunctionGlobals = functionGlobals;
+    const std::string savedCallable = currentCallable;
     const std::string savedCurrentClass = currentClass;
     const ValueType savedReturnType = currentReturnType;
     const bool savedInsideFunction = insideFunction;
@@ -364,16 +576,22 @@ void SemanticAnalyzer::validateClass(const ClassStmt& klass) {
     const bool savedSuperCallAllowed = superCallAllowed;
     currentClass = klass.name;
     auto validateBody = [&](const std::vector<Parameter>& parameters, BlockStmt* body,
-                            bool isConstructor) {
+                            bool isConstructor, const std::string& callable) {
         declared.clear();
         declaredClasses.clear();
         declaredEnums.clear();
         fixedVariables.clear();
+        declaredGenericTypes.clear();
+        retiredNames.clear();
+        blockScopes.clear();
+        functionGlobals.clear();
+        currentCallable = callable;
         std::unordered_set<std::string> parameterNames;
         for (const auto& parameter : parameters) {
             if (!parameterNames.insert(parameter.name).second) {
                 error("parameter '" + parameter.name + "' is declared more than once");
             }
+            checkNotField(parameter.name, "parameter");
             declared[parameter.name] = parameter.type;
         }
         currentReturnType = ValueType::Void;
@@ -385,15 +603,24 @@ void SemanticAnalyzer::validateClass(const ClassStmt& klass) {
         }
     };
     if (klass.hasConstructor) {
-        validateBody(klass.constructorParameters, klass.constructorBody.get(), true);
+        validateBody(klass.constructorParameters, klass.constructorBody.get(), true,
+                     constructorKey(klass.name));
     }
     for (const auto& method : klass.methods) {
-        if (!method.isAbstract) validateBody(method.parameters, method.body.get(), false);
+        if (!method.isAbstract) {
+            validateBody(method.parameters, method.body.get(), false,
+                         methodKey(klass.name, method.name));
+        }
     }
     declared = savedDeclared;
     declaredClasses = savedClasses;
     declaredEnums = savedEnums;
     fixedVariables = savedFixedVariables;
+    declaredGenericTypes = savedGenericTypes;
+    retiredNames = savedRetired;
+    blockScopes = savedBlockScopes;
+    functionGlobals = savedFunctionGlobals;
+    currentCallable = savedCallable;
     currentClass = savedCurrentClass;
     currentReturnType = savedReturnType;
     insideFunction = savedInsideFunction;
@@ -412,15 +639,9 @@ void SemanticAnalyzer::statement(Stmt* stmt) {
         if (current == classes.end() || current->second->baseName.empty()) {
             error("'super()' requires a base class");
         }
-        const ClassStmt* constructorClass = classes.at(current->second->baseName);
-        while (constructorClass && !constructorClass->hasConstructor &&
-               !constructorClass->baseName.empty()) {
-            constructorClass = classes.at(constructorClass->baseName);
-        }
-        const std::vector<Parameter>* expected = nullptr;
-        if (constructorClass && constructorClass->hasConstructor) {
-            expected = &constructorClass->constructorParameters;
-        }
+        const ClassStmt* constructorClass = constructorClassFrom(current->second->baseName);
+        const std::vector<Parameter>* expected =
+            constructorClass ? &constructorClass->constructorParameters : nullptr;
         const std::size_t expectedCount = expected ? expected->size() : 0;
         if (superCall->arguments.size() != expectedCount) {
             error("wrong number of arguments for base constructor");
@@ -436,20 +657,22 @@ void SemanticAnalyzer::statement(Stmt* stmt) {
     if (dynamic_cast<ClassStmt*>(stmt) || dynamic_cast<StructStmt*>(stmt) ||
         dynamic_cast<EnumStmt*>(stmt)) return;
     if (auto* declaration = dynamic_cast<DeclarationStmt*>(stmt)) {
-        if (declared.count(declaration->name)) error("variable '" + declaration->name + "' already declared");
-        declared[declaration->name] = declaration->type;
+        // The initializer is checked first: 'int x = x + 1' must not see the new x.
         if (declaration->initializer) {
             validateAssignmentType(declaration->type, declaration->initializer.get(), declaration->name);
         }
+        declareName(declaration->name, declaration->type);
         return;
     }
     if (auto* initialize = dynamic_cast<InitializeStmt*>(stmt)) {
-        if (declared.count(initialize->name)) error("variable '" + initialize->name + "' already declared");
-        declared[initialize->name] = initialize->type;
+        declareName(initialize->name, initialize->type);
         return;
     }
     if (auto* fix = dynamic_cast<FixStmt*>(stmt)) {
-        if (!declared.count(fix->name)) error("cannot fix undeclared variable '" + fix->name + "'");
+        if (!declared.count(fix->name)) {
+            undeclared(fix->name, "cannot fix undeclared variable '" + fix->name + "'");
+        }
+        noteName(fix->name);
         if (!fixedVariables.insert(fix->name).second) error("variable '" + fix->name + "' is already fixed");
         return;
     }
@@ -474,54 +697,43 @@ void SemanticAnalyzer::statement(Stmt* stmt) {
         return;
     }
     if (auto* initialize = dynamic_cast<NamedInitializeStmt*>(stmt)) {
-        if (declared.count(initialize->name)) {
-            error("variable '" + initialize->name + "' already declared");
-        }
         auto classIt = classes.find(initialize->typeName);
         if (classIt != classes.end()) {
-            const ClassStmt* constructorClass = classIt->second;
-            if (constructorClass->isAbstract) {
+            if (classIt->second->isAbstract) {
                 error("cannot instantiate abstract class '" + initialize->typeName + "'");
             }
-            while (constructorClass && !constructorClass->hasConstructor &&
-                   !constructorClass->baseName.empty()) {
-                constructorClass = classes.at(constructorClass->baseName);
-            }
-            if (constructorClass && constructorClass->hasConstructor) {
+            const ClassStmt* constructorClass = constructorClassFrom(initialize->typeName);
+            if (constructorClass) {
                 if (!constructorClass->constructorPublic) error("class constructor is private");
                 if (!constructorClass->constructorParameters.empty()) {
                     error("class '" + initialize->typeName + "' requires constructor arguments");
                 }
             }
-            declared[initialize->name] = ValueType::Object;
+            declareName(initialize->name, ValueType::Object);
             declaredClasses[initialize->name] = initialize->typeName;
+            noteCall(constructorKey(initialize->typeName));
             return;
         }
         if (structs.count(initialize->typeName)) {
-            declared[initialize->name] = ValueType::Object;
+            declareName(initialize->name, ValueType::Object);
             declaredClasses[initialize->name] = initialize->typeName;
             return;
         }
         auto enumIt = enums.find(initialize->typeName);
         if (enumIt != enums.end()) {
-            declared[initialize->name] = ValueType::Enum;
+            declareName(initialize->name, ValueType::Enum);
             declaredEnums[initialize->name] = initialize->typeName;
             return;
         }
         error("type '" + initialize->typeName + "' is not declared");
     }
     if (auto* instance = dynamic_cast<InstantiateStmt*>(stmt)) {
-        if (declared.count(instance->name)) error("variable '" + instance->name + "' already declared");
         auto classIt = classes.find(instance->className);
         if (classIt == classes.end()) error("class '" + instance->className + "' is not declared");
         if (classIt->second->isAbstract) error("cannot instantiate abstract class '" + instance->className + "'");
         std::vector<Parameter> expected;
-        const ClassStmt* constructorClass = classIt->second;
-        while (constructorClass && !constructorClass->hasConstructor &&
-               !constructorClass->baseName.empty()) {
-            constructorClass = classes.at(constructorClass->baseName);
-        }
-        if (constructorClass && constructorClass->hasConstructor) {
+        const ClassStmt* constructorClass = constructorClassFrom(instance->className);
+        if (constructorClass) {
             if (!constructorClass->constructorPublic) {
                 error("class constructor is private");
             }
@@ -535,13 +747,15 @@ void SemanticAnalyzer::statement(Stmt* stmt) {
                 error("constructor argument type mismatch for '" + expected[i].name + "'");
             }
         }
-        declared[instance->name] = ValueType::Object;
+        declareName(instance->name, ValueType::Object);
         declaredClasses[instance->name] = instance->className;
+        noteCall(constructorKey(instance->className));
         return;
     }
     if (auto* assignment = dynamic_cast<AssignmentStmt*>(stmt)) {
         auto it = declared.find(assignment->name);
         if (it != declared.end()) {
+            noteName(assignment->name);
             if (fixedVariables.count(assignment->name)) {
                 error("cannot assign to fixed variable '" + assignment->name + "'");
             }
@@ -555,6 +769,10 @@ void SemanticAnalyzer::statement(Stmt* stmt) {
                 enumTypeOf(assignment->expr.get()) != declaredEnums[assignment->name]) {
                 error("enum assignment for '" + assignment->name + "' has a different enum type");
             }
+            if (it->second == ValueType::Object && declaredClasses.count(assignment->name)) {
+                validateObjectAssignment(assignment->name, assignment->expr.get());
+                return;
+            }
             validateAssignmentType(it->second, assignment->expr.get(), assignment->name);
             return;
         }
@@ -563,14 +781,19 @@ void SemanticAnalyzer::statement(Stmt* stmt) {
                                       ? nullptr
                                       : findField(currentClass, assignment->name, &owner);
         if (!field || (!field->isPublic && owner != currentClass)) {
-            error("variable or field '" + assignment->name + "' is not declared or accessible");
+            undeclared(assignment->name,
+                       "variable or field '" + assignment->name + "' is not declared or accessible");
         }
         validateAssignmentType(field->type, assignment->expr.get(), assignment->name);
         return;
     }
     if (auto* memberAssignment = dynamic_cast<MemberAssignmentStmt*>(stmt)) {
         auto object = declaredClasses.find(memberAssignment->objectName);
-        if (object == declaredClasses.end()) error("'" + memberAssignment->objectName + "' is not a class instance");
+        if (object == declaredClasses.end()) {
+            undeclared(memberAssignment->objectName,
+                       "'" + memberAssignment->objectName + "' is not a class instance");
+        }
+        noteName(memberAssignment->objectName);
         std::string owner;
         const ClassField* field = findObjectField(object->second, memberAssignment->field, &owner);
         if (!field) error("type '" + object->second + "' has no field '" + memberAssignment->field + "'");
@@ -580,7 +803,10 @@ void SemanticAnalyzer::statement(Stmt* stmt) {
     }
     if (auto* call = dynamic_cast<MethodCallStmt*>(stmt)) {
         auto object = declaredClasses.find(call->objectName);
-        if (object == declaredClasses.end()) error("'" + call->objectName + "' is not a class instance");
+        if (object == declaredClasses.end()) {
+            undeclared(call->objectName, "'" + call->objectName + "' is not a class instance");
+        }
+        noteName(call->objectName);
         std::string owner;
         const ClassMethod* method = findMethod(object->second, call->method, &owner);
         if (!method) error("class '" + object->second + "' has no method '" + call->method + "'");
@@ -593,6 +819,7 @@ void SemanticAnalyzer::statement(Stmt* stmt) {
                 error("argument type mismatch for method '" + call->method + "'");
             }
         }
+        noteMethodCall(object->second, call->method);
         return;
     }
     if (auto* output = dynamic_cast<OutputStmt*>(stmt)) {
@@ -623,87 +850,117 @@ void SemanticAnalyzer::statement(Stmt* stmt) {
         if (fixedVariables.count(compound->name)) error("cannot modify fixed variable '" + compound->name + "'");
         auto it = declared.find(compound->name);
         ValueType target;
-        if (it != declared.end()) target = it->second;
-        else {
+        if (it != declared.end()) {
+            target = it->second;
+            noteName(compound->name);
+        } else {
             std::string owner;
             const ClassField* field = currentClass.empty()
                                           ? nullptr
                                           : findField(currentClass, compound->name, &owner);
             if (!field || (!field->isPublic && owner != currentClass)) {
-                error("variable or field '" + compound->name + "' is not declared or accessible");
+                undeclared(compound->name,
+                           "variable or field '" + compound->name + "' is not declared or accessible");
             }
             target = field->type;
         }
-        if (!isNumeric(target) || !isNumeric(exprType(compound->amount.get()))) {
+        const ValueType amount = exprType(compound->amount.get());
+        if (!isNumeric(target) || !isNumeric(amount)) {
             error("compound arithmetic requires numeric operands");
+        }
+        // Same rule as assignment: a float result cannot be stored in an int.
+        if (target == ValueType::Int && amount == ValueType::Float) {
+            error("'" + compound->op + "' with a float amount cannot update int variable '" +
+                  compound->name + "'; a float cannot be stored in an int");
+        }
+        if ((compound->op == "divide" || compound->op == "mod") &&
+            isConstantZero(compound->amount.get())) {
+            error(compound->op == "divide" ? "division by constant zero" : "modulo by constant zero");
         }
         return;
     }
     if (auto* ifStmt = dynamic_cast<IfStmt*>(stmt)) {
         const ValueType conditionType = exprType(ifStmt->condition.get());
         if (conditionType != ValueType::Bool && conditionType != ValueType::Any) error("if condition must be boolean");
-        for (auto& child : ifStmt->thenBlock->statements) statement(child.get());
-        if (ifStmt->elseBlock) for (auto& child : ifStmt->elseBlock->statements) statement(child.get());
+        analyzeBlock(ifStmt->thenBlock.get());
+        analyzeBlock(ifStmt->elseBlock.get());
         return;
     }
     if (auto* whileStmt = dynamic_cast<WhileStmt*>(stmt)) {
         const ValueType conditionType = exprType(whileStmt->condition.get());
         if (conditionType != ValueType::Bool && conditionType != ValueType::Any) error("while condition must be boolean");
         ++loopDepth;
-        for (auto& child : whileStmt->body->statements) statement(child.get());
+        analyzeBlock(whileStmt->body.get());
         --loopDepth;
         return;
     }
     if (auto* repeat = dynamic_cast<RepeatStmt*>(stmt)) {
         if (!isNumeric(exprType(repeat->count.get()))) error("repeat count must be numeric");
         ++loopDepth;
-        for (auto& child : repeat->body->statements) statement(child.get());
+        analyzeBlock(repeat->body.get());
         --loopDepth;
         return;
     }
     if (auto* forStmt = dynamic_cast<ForStmt*>(stmt)) {
+        // The loop counter belongs to the enclosing scope and stays visible after the loop.
+        if (auto* declaration = dynamic_cast<DeclarationStmt*>(forStmt->init.get());
+            declaration && declared.count(declaration->name) &&
+            !functionGlobals.count(declaration->name)) {
+            error("variable '" + declaration->name + "' already declared; blocks do not create a "
+                  "new scope, so reuse it in this loop with 'for (" + declaration->name +
+                  " = ...; ...)'");
+        }
         statement(forStmt->init.get());
         const ValueType conditionType = exprType(forStmt->condition.get());
         if (conditionType != ValueType::Bool && conditionType != ValueType::Any) error("for-loop condition must be boolean");
         statement(forStmt->increment.get());
         ++loopDepth;
-        for (auto& child : forStmt->body->statements) statement(child.get());
+        analyzeBlock(forStmt->body.get());
         --loopDepth;
         return;
     }
     if (auto* each = dynamic_cast<ForEachStmt*>(stmt)) {
         if (exprType(each->collection.get()) != ValueType::List) error("each-in loop requires a list");
-        if (declared.count(each->name)) error("iteration variable '" + each->name + "' is already declared");
+        if (declared.count(each->name) || retiredNames.count(each->name)) {
+            error("iteration variable '" + each->name + "' is already declared");
+        }
+        checkNotField(each->name, "iteration variable");
         declared[each->name] = ValueType::Any;
         ++loopDepth;
-        for (auto& child : each->body->statements) statement(child.get());
+        analyzeBlock(each->body.get());
         --loopDepth;
         declared.erase(each->name);
         return;
     }
     if (auto* mutation = dynamic_cast<ListMutationStmt*>(stmt)) {
-        const auto list = declared.find(mutation->name);
-        if (list == declared.end() || list->second != ValueType::List) error("'" + mutation->name + "' is not a declared list");
+        requireList(mutation->name);
         if (fixedVariables.count(mutation->name)) error("cannot modify fixed list '" + mutation->name + "'");
-        if (mutation->value) exprType(mutation->value.get());
+        if (mutation->value && exprType(mutation->value.get()) == ValueType::Void) {
+            error("cannot put the result of a nothing-returning function on a list");
+        }
         return;
     }
     if (auto* check = dynamic_cast<CheckStmt*>(stmt)) {
         const ValueType checkedType = exprType(check->value.get());
+        if (checkedType != ValueType::Int && checkedType != ValueType::Float &&
+            checkedType != ValueType::String && checkedType != ValueType::Bool &&
+            checkedType != ValueType::Enum && checkedType != ValueType::Any) {
+            error("check value must be an int, float, string, bool or enum value");
+        }
         for (auto& item : check->cases) {
             const ValueType caseType = exprType(item.value.get());
-            if (!(assignable(checkedType, caseType) && assignable(caseType, checkedType))) {
+            if (!(assignable(checkedType, caseType) && assignable(caseType, checkedType)) ||
+                (checkedType == ValueType::Enum && caseType == ValueType::Enum &&
+                 enumTypeOf(check->value.get()) != enumTypeOf(item.value.get()))) {
                 error("check value and when case have incompatible types");
             }
-            for (auto& child : item.body->statements) statement(child.get());
+            analyzeBlock(item.body.get());
         }
-        if (check->otherwise) {
-            for (auto& child : check->otherwise->statements) statement(child.get());
-        }
+        analyzeBlock(check->otherwise.get());
         return;
     }
     if (auto* block = dynamic_cast<BlockStmt*>(stmt)) {
-        for (auto& child : block->statements) statement(child.get());
+        analyzeBlock(block);
         return;
     }
     error("unknown statement");
@@ -718,6 +975,14 @@ void SemanticAnalyzer::analyze(const Program& program) {
     enums.clear();
     functions.clear();
     fixedVariables.clear();
+    declaredGenericTypes.clear();
+    retiredNames.clear();
+    blockScopes.clear();
+    functionGlobals.clear();
+    currentCallable.clear();
+    callableGlobals.clear();
+    callableCalls.clear();
+    topLevelCalls.clear();
     currentClass.clear();
     insideConstructor = false;
     superCallAllowed = false;
@@ -746,21 +1011,18 @@ void SemanticAnalyzer::analyze(const Program& program) {
             functions.emplace(function->name, function);
         }
     }
+    validateHierarchy(program);
     for (const auto& stmt : program) {
         if (auto* function = dynamic_cast<const FunctionStmt*>(stmt.get())) {
-            const auto savedDeclared = declared;
-            const auto savedClasses = declaredClasses;
-            const auto savedEnums = declaredEnums;
-            const auto savedFixed = fixedVariables;
-            const auto savedGenericTypes = declaredGenericTypes;
-            const ValueType savedReturnType = currentReturnType;
-            const std::string savedGenericReturnType = currentGenericReturnType;
-            const bool savedInsideFunction = insideFunction;
             declared.clear();
             declaredClasses.clear();
             declaredEnums.clear();
             fixedVariables.clear();
             declaredGenericTypes.clear();
+            retiredNames.clear();
+            blockScopes.clear();
+            // A function can use any top-level global; checkGlobalsDeclared makes sure it
+            // is not called before those globals are declared.
             for (const auto& global : program) {
                 if (auto* declaration = dynamic_cast<const DeclarationStmt*>(global.get())) {
                     declared[declaration->name] = declaration->type;
@@ -781,6 +1043,12 @@ void SemanticAnalyzer::analyze(const Program& program) {
                     fixedVariables.insert(fix->name);
                 }
             }
+            functionGlobals.clear();
+            for (const auto& [name, type] : declared) {
+                (void)type;
+                functionGlobals.insert(name);
+            }
+            currentCallable = functionKey(function->name);
             currentReturnType = function->returnType;
             currentGenericReturnType = function->genericReturnType;
             insideFunction = true;
@@ -809,22 +1077,33 @@ void SemanticAnalyzer::analyze(const Program& program) {
                 if (!parameterNames.insert(parameter.name).second) {
                     error("parameter '" + parameter.name + "' is declared more than once");
                 }
+                // A parameter belongs to the function's own scope and hides a global
+                // of the same name inside this function.
+                functionGlobals.erase(parameter.name);
+                declaredClasses.erase(parameter.name);
+                declaredEnums.erase(parameter.name);
+                fixedVariables.erase(parameter.name);
                 declared[parameter.name] = parameter.type;
                 if (!parameter.genericType.empty()) {
                     declaredGenericTypes[parameter.name] = parameter.genericType;
                 }
             }
             for (auto& child : function->body->statements) statement(child.get());
-            declared = savedDeclared;
-            declaredClasses = savedClasses;
-            declaredEnums = savedEnums;
-            fixedVariables = savedFixed;
-            declaredGenericTypes = savedGenericTypes;
-            currentReturnType = savedReturnType;
-            currentGenericReturnType = savedGenericReturnType;
-            insideFunction = savedInsideFunction;
         }
     }
+    declared.clear();
+    declaredClasses.clear();
+    declaredEnums.clear();
+    fixedVariables.clear();
+    declaredGenericTypes.clear();
+    retiredNames.clear();
+    blockScopes.clear();
+    functionGlobals.clear();
+    currentCallable.clear();
+    currentReturnType = ValueType::Void;
+    currentGenericReturnType.clear();
+    insideFunction = false;
+
     std::unordered_map<std::string, std::string> enumMemberOwners;
     for (const auto& [enumName, definition] : enums) {
         std::unordered_map<std::string, bool> memberNames;
@@ -850,5 +1129,15 @@ void SemanticAnalyzer::analyze(const Program& program) {
     for (const auto& stmt : program) {
         if (auto* klass = dynamic_cast<const ClassStmt*>(stmt.get())) validateClass(*klass);
     }
-    for (auto& stmt : program) statement(stmt.get());
+    for (auto& stmt : program) {
+        // Globals declared before this statement: anything a call here uses must be among them.
+        std::unordered_set<std::string> available;
+        for (const auto& [name, type] : declared) {
+            (void)type;
+            available.insert(name);
+        }
+        topLevelCalls.clear();
+        statement(stmt.get());
+        checkGlobalsDeclared(available);
+    }
 }

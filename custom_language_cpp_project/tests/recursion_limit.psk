@@ -1,0 +1,2 @@
+define function down(integer n) returning integer { return down(n + 1) }
+say down(0)

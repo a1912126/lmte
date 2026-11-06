@@ -1,0 +1,24 @@
+// Functions read globals, never their caller's variables (lexical scoping).
+int x = 1
+define function f() returning integer { return x }
+define function g(integer x) returning integer { return f() }
+say g(99)
+
+// A global updated inside a function keeps its new value.
+int total = 0
+define function bump(integer amount) returning nothing { add amount to total }
+define function outer(integer total) returning nothing { bump(5) }
+outer(1)
+say total
+
+// Methods can reach globals through a function, and a function called from a
+// method sees the global, not the object's field of the same name.
+int count = 7
+define function readCount() returning integer { return count }
+define class Box {
+    public initialize integer count
+    public define constructor {} { set count to 99 }
+    public define function show() returning nothing { say readCount() }
+}
+Initialize Box b
+call show() from b

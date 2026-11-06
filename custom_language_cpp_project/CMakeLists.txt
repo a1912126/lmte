@@ -17,7 +17,9 @@ if(LLVM_CONFIG_EXECUTABLE)
     endif()
     list(PREPEND CMAKE_PREFIX_PATH "${LLVM_CMAKE_DIR}")
 endif()
-find_package(LLVM REQUIRED CONFIG)
+# LLVM is optional: without it everything except --llvm-ir works.
+find_package(LLVM CONFIG QUIET)
+find_package(Threads REQUIRED)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,11 +38,16 @@ add_executable(customlang
     src/llvm_backend.cpp
 )
 
-target_include_directories(customlang SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
 target_include_directories(customlang PRIVATE include)
-add_definitions(${LLVM_DEFINITIONS})
-
 target_compile_options(customlang PRIVATE -Wall -Wextra -pedantic -O2)
+target_link_libraries(customlang PRIVATE Threads::Threads)
 
-llvm_map_components_to_libnames(LLVM_LIBRARIES Core Passes Support)
-target_link_libraries(customlang PRIVATE ${LLVM_LIBRARIES})
+if(LLVM_FOUND)
+    target_include_directories(customlang SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
+    add_definitions(${LLVM_DEFINITIONS})
+    llvm_map_components_to_libnames(LLVM_LIBRARIES Core Passes Support)
+    target_link_libraries(customlang PRIVATE ${LLVM_LIBRARIES})
+else()
+    message(STATUS "LLVM not found - building without --llvm-ir support")
+    target_compile_definitions(customlang PRIVATE PLAINSPEAK_NO_LLVM)
+endif()

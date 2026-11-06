@@ -2,6 +2,37 @@
 #include "common.hpp"
 #include <algorithm>
 #include <stdexcept>
+#include <unordered_set>
+
+namespace {
+// Words with a fixed meaning in Plainspeak. They cannot be used as the name of a
+// variable, parameter, field, function, method, type or enum member.
+const std::unordered_set<std::string>& reservedWords() {
+    static const std::unordered_set<std::string> words = {
+        // types and literals
+        "int", "integer", "float", "string", "bool", "list", "nothing", "true", "false",
+        // operators
+        "and", "or", "not", "mod", "is", "of",
+        // statements
+        "initialize", "Initialize", "define", "Define", "abstract", "class", "struct", "enum",
+        "function", "call", "super", "set", "say", "ask", "cout", "add", "subtract",
+        "multiply", "divide", "put", "remove", "fix", "return", "stop", "skip", "if", "else",
+        "otherwise", "check", "when", "while", "repeat", "for", "each",
+        // list queries
+        "item", "length", "top",
+        // class members
+        "public", "private", "inherits", "constructor", "returning",
+    };
+    return words;
+}
+}
+
+void Parser::requireName(const Token& token, const std::string& what) const {
+    if (reservedWords().count(token.text)) {
+        errorAt(token, "'" + token.text + "' is a reserved word and cannot be used as a " +
+                           what + " name");
+    }
+}
 
 Parser::Parser(std::vector<Token> t) : tokens(std::move(t)) {}
 
@@ -145,6 +176,7 @@ StmtPtr Parser::parseStatement() {
 
 StmtPtr Parser::parseDeclaration(ValueType type) {
     Token name = consume(TokenType::Identifier, "expected variable name");
+    requireName(name, "variable");
     ExprPtr initializer;
     if (match(TokenType::Assign)) initializer = parseExpression();
     optionalSemicolon();
@@ -155,11 +187,18 @@ StmtPtr Parser::parseInitialize() {
     Token first = consume(TokenType::Identifier, "expected type or variable name after 'initialize'");
     if (isTypeWord(first.text)) {
         Token variable = consume(TokenType::Identifier, "expected variable name after type");
+        requireName(variable, "variable");
         optionalSemicolon();
         return std::make_unique<InitializeStmt>(variable.text, parseTypeWord(first.text));
     }
 
     Token second = consume(TokenType::Identifier, "expected variable type or instance name");
+    if (isTypeWord(second.text)) {
+        requireName(first, "variable");
+        optionalSemicolon();
+        return std::make_unique<InitializeStmt>(first.text, parseTypeWord(second.text));
+    }
+    requireName(second, "variable");
     if (matchWord("with")) {
         consume(TokenType::LeftParen, "expected '(' before constructor arguments");
         auto node = std::make_unique<InstantiateStmt>();
@@ -173,10 +212,6 @@ StmtPtr Parser::parseInitialize() {
         consume(TokenType::RightParen, "expected ')' after constructor arguments");
         optionalSemicolon();
         return node;
-    }
-    if (isTypeWord(second.text)) {
-        optionalSemicolon();
-        return std::make_unique<InitializeStmt>(first.text, parseTypeWord(second.text));
     }
     optionalSemicolon();
     auto node = std::make_unique<NamedInitializeStmt>();
@@ -198,6 +233,7 @@ std::vector<Parameter> Parser::parseParameters(
             errorAt(type, "unsupported parameter type '" + type.text + "'");
         }
         Token name = consume(TokenType::Identifier, "expected parameter name");
+        requireName(name, "parameter");
         parameters.push_back({isGeneric ? ValueType::Any : parseTypeWord(type.text),
                               name.text, isGeneric ? type.text : ""});
     } while (match(TokenType::Comma));
@@ -206,6 +242,7 @@ std::vector<Parameter> Parser::parseParameters(
 
 StmtPtr Parser::parseClass(bool abstractClass) {
     Token name = consume(TokenType::Identifier, "expected class name");
+    requireName(name, "class");
     auto klass = std::make_unique<ClassStmt>();
     klass->name = name.text;
     klass->isAbstract = abstractClass;
@@ -228,12 +265,14 @@ StmtPtr Parser::parseClass(bool abstractClass) {
 
 StmtPtr Parser::parseFunction() {
     Token name = consume(TokenType::Identifier, "expected function name");
+    requireName(name, "function");
     auto function = std::make_unique<FunctionStmt>();
     function->name = name.text;
     if (match(TokenType::Less)) {
         do {
             Token typeParameter = consume(TokenType::Identifier,
                                           "expected generic type parameter");
+            requireName(typeParameter, "generic type parameter");
             if (isTypeWord(typeParameter.text) || typeParameter.text == "nothing") {
                 errorAt(typeParameter, "generic type parameter must use a distinct name");
             }
@@ -307,6 +346,7 @@ StmtPtr Parser::parseExpressionStatement() {
 
 StmtPtr Parser::parseStruct() {
     Token name = consume(TokenType::Identifier, "expected struct name");
+    requireName(name, "struct");
     auto structure = std::make_unique<StructStmt>();
     structure->name = name.text;
     consume(TokenType::LeftBrace, "expected '{' after struct name");
@@ -315,6 +355,7 @@ StmtPtr Parser::parseStruct() {
         Token type = consume(TokenType::Identifier, "expected struct field type");
         if (!isTypeWord(type.text)) errorAt(type, "unsupported struct field type '" + type.text + "'");
         Token field = consume(TokenType::Identifier, "expected struct field name");
+        requireName(field, "field");
         structure->fields.push_back({parseTypeWord(type.text), field.text, true});
         optionalSemicolon();
     }
@@ -324,13 +365,15 @@ StmtPtr Parser::parseStruct() {
 
 StmtPtr Parser::parseEnum() {
     Token name = consume(TokenType::Identifier, "expected enum name");
+    requireName(name, "enum");
     auto enumeration = std::make_unique<EnumStmt>();
     enumeration->name = name.text;
     consume(TokenType::LeftBrace, "expected '{' after enum name");
     while (!check(TokenType::RightBrace) && !isAtEnd()) {
         if (match(TokenType::Comma) || match(TokenType::Semicolon)) continue;
-        enumeration->members.push_back(
-            consume(TokenType::Identifier, "expected enum member name").text);
+        const Token& member = consume(TokenType::Identifier, "expected enum member name");
+        requireName(member, "enum member");
+        enumeration->members.push_back(member.text);
     }
     consume(TokenType::RightBrace, "expected '}' after enum members");
     if (enumeration->members.empty()) errorAt(name, "enum must contain at least one member");
@@ -342,6 +385,7 @@ StmtPtr Parser::parseClassMember(ClassStmt& klass, bool isPublic, bool abstractM
         Token type = consume(TokenType::Identifier, "expected field type");
         if (!isTypeWord(type.text)) errorAt(type, "unsupported field type '" + type.text + "'");
         Token field = consume(TokenType::Identifier, "expected field name");
+        requireName(field, "field");
         klass.fields.push_back({parseTypeWord(type.text), field.text, isPublic});
         optionalSemicolon();
         return nullptr;
@@ -360,6 +404,7 @@ StmtPtr Parser::parseClassMember(ClassStmt& klass, bool isPublic, bool abstractM
         }
         consumeWord("function", "expected 'function' or 'constructor' after 'define'");
         Token methodName = consume(TokenType::Identifier, "expected method name");
+        requireName(methodName, "method");
         ClassMethod method;
         method.name = methodName.text;
         method.isPublic = isPublic;
@@ -492,17 +537,20 @@ std::unique_ptr<BlockStmt> Parser::parseBlock() {
 }
 
 StmtPtr Parser::parseIf() {
-    ExprPtr condition;
-    if (match(TokenType::LeftParen)) {
-        condition = parseExpression();
-        consume(TokenType::RightParen, "expected ')' after if condition");
-    } else {
-        condition = parseNaturalCondition();
-    }
+    // A condition may start with '(' without being wrapped in one pair of
+    // parentheses, e.g. '(x > 1) and (y > 1)', so it is parsed as a whole
+    // expression. parsePrimary handles the parentheses.
+    ExprPtr condition = parseNaturalCondition();
 
     auto thenBlock = parseBlock();
     std::unique_ptr<BlockStmt> elseBlock;
-    if (matchWord("else") || matchWord("otherwise")) elseBlock = parseBlock();
+    if (matchWord("else") || matchWord("otherwise")) {
+        if (checkWord("if")) {
+            errorAtCurrent("'" + previous().text + " if' is not supported; put a new 'if' "
+                           "inside the " + previous().text + " { } block instead");
+        }
+        elseBlock = parseBlock();
+    }
 
     auto node = std::make_unique<IfStmt>();
     node->condition = std::move(condition);
@@ -534,6 +582,7 @@ StmtPtr Parser::parseCheck() {
 
 StmtPtr Parser::parseForEach() {
     Token name = consume(TokenType::Identifier, "expected iteration variable after 'each'");
+    requireName(name, "variable");
     consumeWord("in", "expected 'in' after iteration variable");
     auto result = std::make_unique<ForEachStmt>();
     result->name = name.text;
@@ -542,35 +591,59 @@ StmtPtr Parser::parseForEach() {
     return result;
 }
 
+namespace {
+bool isLogicalExpression(const Expr* expression) {
+    auto* binary = dynamic_cast<const BinaryExpr*>(expression);
+    return binary && (binary->op == "and" || binary->op == "or");
+}
+}
+
 ExprPtr Parser::parseNaturalCondition() {
+    ExprPtr condition = parseNaturalComparison();
+    if (checkWord("and") || checkWord("or")) {
+        errorAtCurrent("an English comparison must be the whole condition and cannot be "
+                       "combined with '" + peek().text + "'; use symbols instead, e.g. "
+                       "if (x > 1 " + peek().text + " y > 1)");
+    }
+    return condition;
+}
+
+ExprPtr Parser::parseNaturalComparison() {
+    // The right-hand side of an English comparison is parsed with parseEquality so it
+    // stops before 'and'/'or'; parseNaturalCondition then reports the combination.
     ExprPtr left = parseExpression();
+    if (checkWord("is") && isLogicalExpression(left.get())) {
+        errorAtCurrent("an English comparison must be the whole condition and cannot be "
+                       "combined with 'and'/'or'; use symbols instead, e.g. "
+                       "if (x > 1 and y > 1)");
+    }
     if (matchWord("is")) {
         if (matchWord("not")) {
             consumeWord("equal", "expected 'equal' after 'is not'");
             consumeWord("to", "expected 'to' after 'is not equal'");
-            return std::make_unique<BinaryExpr>("!=", std::move(left), parseExpression());
+            return std::make_unique<BinaryExpr>("!=", std::move(left), parseEquality());
         }
         if (matchWord("greater")) {
             consumeWord("than", "expected 'than' after 'greater'");
             if (matchWord("or")) {
                 consumeWord("equal", "expected 'equal' after 'or'");
                 consumeWord("to", "expected 'to' after 'equal'");
-                return std::make_unique<BinaryExpr>(">=", std::move(left), parseExpression());
+                return std::make_unique<BinaryExpr>(">=", std::move(left), parseEquality());
             }
-            return std::make_unique<BinaryExpr>(">", std::move(left), parseExpression());
+            return std::make_unique<BinaryExpr>(">", std::move(left), parseEquality());
         }
         if (matchWord("less")) {
             consumeWord("than", "expected 'than' after 'less'");
             if (matchWord("or")) {
                 consumeWord("equal", "expected 'equal' after 'or'");
                 consumeWord("to", "expected 'to' after 'equal'");
-                return std::make_unique<BinaryExpr>("<=", std::move(left), parseExpression());
+                return std::make_unique<BinaryExpr>("<=", std::move(left), parseEquality());
             }
-            return std::make_unique<BinaryExpr>("<", std::move(left), parseExpression());
+            return std::make_unique<BinaryExpr>("<", std::move(left), parseEquality());
         }
         if (matchWord("equal")) {
             consumeWord("to", "expected 'to' after 'equal'");
-            return std::make_unique<BinaryExpr>("==", std::move(left), parseExpression());
+            return std::make_unique<BinaryExpr>("==", std::move(left), parseEquality());
         }
         errorAtCurrent("expected a supported comparison after 'is'");
     }
@@ -578,14 +651,8 @@ ExprPtr Parser::parseNaturalCondition() {
 }
 
 StmtPtr Parser::parseWhile() {
-    ExprPtr condition;
-    if (match(TokenType::LeftParen)) {
-        condition = parseExpression();
-        consume(TokenType::RightParen, "expected ')' after while condition");
-    } else {
-        condition = parseNaturalCondition();
-        matchWord("do");
-    }
+    ExprPtr condition = parseNaturalCondition();
+    matchWord("do");
     auto body = parseBlock();
     auto node = std::make_unique<WhileStmt>();
     node->condition = std::move(condition);
@@ -712,10 +779,14 @@ ExprPtr Parser::parseUnary() {
 ExprPtr Parser::parsePrimary() {
     if (match(TokenType::Number)) {
         const std::string& text = previous().text;
-        if (text.find('.') != std::string::npos) {
-            return std::make_unique<LiteralExpr>(Value::makeFloat(std::stod(text)));
+        const bool isFloat = text.find('.') != std::string::npos;
+        try {
+            if (isFloat) return std::make_unique<LiteralExpr>(Value::makeFloat(std::stod(text)));
+            return std::make_unique<LiteralExpr>(Value::makeInt(std::stoll(text)));
+        } catch (const std::out_of_range&) {
+            errorAt(previous(), std::string(isFloat ? "float" : "integer") +
+                                    " literal out of range");
         }
-        return std::make_unique<LiteralExpr>(Value::makeInt(std::stoll(text)));
     }
 
     if (match(TokenType::String)) {
@@ -734,7 +805,8 @@ ExprPtr Parser::parsePrimary() {
             result->name = consume(TokenType::Identifier, "expected list name after 'of'").text;
             if (name == "item") {
                 consumeWord("at", "expected 'at' after list name");
-                result->index = parseExpression();
+                // Arithmetic only, so 'item of l at 0 > 5' compares the item, not the index.
+                result->index = parseTerm();
             }
             return result;
         }

@@ -1,0 +1,6 @@
+define function f() returning integer {
+    int count = 3
+    return count
+}
+say f()
+int count = 10

@@ -1,6 +1,17 @@
 #include "llvm_backend.hpp"
 #include "common.hpp"
 
+#ifdef PLAINSPEAK_NO_LLVM
+
+// Built without LLVM (see the Makefile): everything except --llvm-ir still works.
+std::string generateOptimizedLLVMIR(const Program&) {
+    throw CompileError(
+        "--llvm-ir is unavailable: this build of customlang was compiled without LLVM "
+        "(install LLVM and run 'make clean && make' to enable it)");
+}
+
+#else
+
 #include <llvm/ADT/APFloat.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
@@ -470,3 +481,5 @@ std::string generateOptimizedLLVMIR(const Program& program) {
     LLVMBackend backend;
     return backend.generate(program);
 }
+
+#endif // PLAINSPEAK_NO_LLVM
