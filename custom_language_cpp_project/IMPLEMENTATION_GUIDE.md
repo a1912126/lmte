@@ -133,9 +133,7 @@ loosest:
 
 Operators at the same binary precedence level are grouped left to right. Thus
 `20 / 5 * 2` groups as `(20 / 5) * 2`, while `2 + 3 * 4` groups as
-`2 + (3 * 4)`. Parentheses can override the standard grouping. `^` is not a
-supported exponent operator.
-
+`2 + (3 * 4)`. Parentheses can override the standard grouping. 
 ### Statements and declarations
 
 The AST represents declarations, initialization, assignments, output, input,
@@ -149,7 +147,7 @@ Supported control flow includes:
 - `while`;
 - `repeat N times`;
 - C-style `for (initialize; condition; increment)`;
-- `for each name in collection`;
+- `for each in collection`;
 - `check` / `when` / `otherwise`;
 - `stop` and `skip` for exiting or continuing the innermost loop.
 
@@ -304,7 +302,7 @@ list raises a runtime error.
 
 The interpreter checks operations that depend on runtime values, including
 division/modulo by zero, list bounds/emptiness, failed conversions, invalid
-input, and unresolved variables or fields. While/repeat/foreach execution has
+input, and unresolved variables or fields. While/repeat/"for each" execution has
 a high iteration guard to report possible infinite loops.
 
 ## 8. Object-oriented features

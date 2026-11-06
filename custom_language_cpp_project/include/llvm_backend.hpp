@@ -3,4 +3,4 @@
 #include "ast.hpp"
 #include <string>
 
-std::string generateOptimizedLLVMIR(const Program& program);
+std::string generateOptimizedLLVMIR(const Program &program);
