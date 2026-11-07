@@ -1,47 +1,201 @@
-// Demonstration of the custom language
-initialize x int
-set x to 5
+// =====================================================================
+// Plainspeak demo: a small pet shelter.
+// Shows input/output, variables and types, conditions, every loop form,
+// lists, functions (recursive and generic), structs, enums and classes
+// (abstract classes, inheritance, constructors, super, overriding).
+//
+// Run:        ./customlang demo.psk
+// Or piped:   printf 'Ada\n3\n' | ./customlang demo.psk
+// =====================================================================
 
-cout << x
-set x to x + 5
-say x
+// ---------- Input and output ----------
+initialize string visitor
+ask "What is your name? " into visitor
+initialize integer wanted
+ask "How many pets would you like to meet? " into wanted
+say "Welcome to the shelter, " + visitor + "!"
+cout << "Pets you asked to meet:"
+cout << wanted
 
-if (x > 5) {
-    say "x is greater than 5"
-} else {
-    say "x is not greater than 5"
+// ---------- Variables, types and constants ----------
+int capacity = 10
+fix capacity
+float feedPerPet = 1.5
+bool open = true
+say "Capacity:"
+say capacity
+
+// ---------- Functions ----------
+define function factorial(integer n) returning integer {
+    if n is less than or equal to 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
 }
 
-if x is equal to 10 {
-    say "ten"
+define function larger<T>(T first, T second) returning T {
+    if (first > second) { return first }
+    return second
+}
+
+say "Ways to line up 4 pets:"
+say factorial(4)
+// The generic function works for any type that can be compared.
+say "Larger of 3 and 8:"
+say larger(3, 8)
+say "Later in the alphabet of cat and dog:"
+say larger("cat", "dog")
+
+// ---------- Structs and enums ----------
+define struct Kennel {
+    integer number
+    float size
+}
+define enum Mood {happy, sleepy, hungry}
+
+initialize Kennel kennel
+set number of kennel to 7
+set size of kennel to 2.5
+say "Kennel number and size:"
+say number of kennel
+say size of kennel
+
+initialize Mood mood
+set mood to hungry
+check mood {
+    when happy { say "Mood: happy" }
+    when sleepy { say "Mood: sleepy" }
+    otherwise { say "Mood: hungry - time to eat" }
+}
+
+// ---------- Object-oriented programming ----------
+abstract define class Animal {
+    public initialize string name
+    private initialize integer age
+    public define constructor {string animalName, integer animalAge} {
+        set name to animalName
+        set age to animalAge
+    }
+    public abstract define function speak() returning nothing
+    public define function describe() returning nothing {
+        say name + "'s age:"
+        say age
+    }
+}
+
+define class Dog inherits Animal {
+    public initialize list tricks
+    public define constructor {string dogName, integer dogAge} {
+        super(dogName, dogAge)
+        put "sit" on tricks
+        put "roll over" on tricks
+    }
+    public define function speak() returning nothing {
+        say name + " says Woof!"
+    }
+    public define function showTricks() returning nothing {
+        for each trick in tricks {
+            say trick
+        }
+    }
+}
+
+define class Cat inherits Animal {
+    public define constructor {string catName, integer catAge} {
+        super(catName, catAge)
+    }
+    public define function speak() returning nothing {
+        say name + " says Meow!"
+    }
+}
+
+Initialize Dog rex with ("Rex", 3)
+Initialize Cat luna with ("Luna", 2)
+
+call speak() from rex
+call describe() from rex
+say "Rex knows these tricks:"
+call showTricks() from rex
+call speak() from luna
+call describe() from luna
+
+// An object variable can be re-pointed at another object of its class.
+Initialize Cat favourite with ("Tom", 5)
+set favourite to luna
+say "Favourite:"
+say name of favourite
+set name of rex to "Rexy"
+say "Renamed:"
+say name of rex
+
+// ---------- Lists ----------
+initialize list pets
+put rex on pets
+put luna on pets
+say "Pets in the shelter:"
+say length of pets
+
+initialize list weights
+put 12 on weights
+put 4 on weights
+put 30 on weights
+say "Last weight added:"
+say top of weights
+say "First weight:"
+say item of weights at 0
+
+// ---------- Loops ----------
+// for each, with skip (continue) and stop (break)
+initialize integer total
+set total to 0
+for each w in weights {
+    if w is less than 5 {
+        skip
+    }
+    if w is greater than 20 {
+        stop
+    }
+    set total to total + w
+}
+say "Total of the weights from 5 up, stopping at the first over 20:"
+say total
+
+// counted for loop, meeting as many pets as the visitor asked for
+initialize integer met
+set met to 0
+for (int i = 0; i < length of pets; i++) {
+    if (i >= wanted) { stop }
+    add 1 to met
+}
+say visitor + " met this many pets:"
+say met
+
+// while loop
+initialize float food
+set food to 0
+while (food < feedPerPet * 3) {
+    add feedPerPet to food
+}
+say "Food prepared:"
+say food
+
+// repeat loop, with arithmetic commands
+initialize integer treats
+set treats to 1
+repeat 3 times {
+    multiply 2 to treats
+}
+say "Treats after doubling 3 times:"
+say treats
+subtract 2 from treats
+divide treats by 3
+mod treats by 4
+say "Treats left:"
+say treats
+
+// ---------- Logic ----------
+if (open and wanted > 0) {
+    say "The shelter is open - enjoy your visit!"
 } otherwise {
-    say "not ten"
+    say "Come back another time."
 }
-
-while (x < 13) {
-    x = x + 1
-}
-say x
-
-repeat 2 times {
-    subtract 1 from x
-}
-say x
-
-multiply 2 to x
-say x
-
-divide x by 2
-say x
-
-for (int i = 0; i < 3; i++) {
-    say i
-}
-
-initialize first string
-set first to "hello"
-initialize second string
-set second to first
-say second
-set second to "world"
-say second

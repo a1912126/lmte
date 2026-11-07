@@ -8,7 +8,7 @@ ifneq ($(NO_LLVM),1)
 LLVM_FOUND := $(shell test -n "$(LLVM_CONFIG)" && test -x "$(LLVM_CONFIG)" && echo yes)
 endif
 
-CXXFLAGS := -std=c++17 -Wall -Wextra -pedantic -O2 -pthread -Iinclude -MMD -MP
+CXXFLAGS := -std=c++17 -Wall -Wextra -pedantic -O2 -Iinclude -MMD -MP
 
 ifeq ($(LLVM_FOUND),yes)
 LLVM_INCLUDEDIR := $(shell $(LLVM_CONFIG) --includedir)
@@ -22,15 +22,22 @@ $(info Note: LLVM not found - building without --llvm-ir support. Set LLVM_CONFI
 endif
 endif
 
+# Windows gives the main thread only a 1-2 MB stack; reserve 16 MB so deep recursion
+# in a Plainspeak program is caught cleanly instead of crashing.
+ifeq ($(OS),Windows_NT)
+LDFLAGS += -Wl,--stack,16777216
+EXE := .exe
+endif
+
 SOURCES := $(wildcard src/*.cpp)
 OBJECTS := $(SOURCES:.cpp=.o)
 DEPENDS := $(OBJECTS:.o=.d)
-TARGET := customlang
+TARGET := customlang$(EXE)
 
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS)
-	$(CXX) $(CXXFLAGS) $(OBJECTS) $(LDLIBS) -o $@
+	$(CXX) $(CXXFLAGS) $(OBJECTS) $(LDFLAGS) $(LDLIBS) -o $@
 
 src/%.o: src/%.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@

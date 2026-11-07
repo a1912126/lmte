@@ -31,6 +31,9 @@ class Interpreter {
   std::string activeClass;
   int callDepth = 0;
   std::uintptr_t stackBase = 0;
+  // How much C++ stack the running program may use before a call is refused. It stays
+  // well inside the default main-thread stack (8 MB on macOS/Linux; the build sets
+  // 16 MB on Windows, whose default is only 1-2 MB).
   std::size_t stackBudget = 4u << 20;
 
   // Where a name lives: a variable in a frame, or a field of the active object.
@@ -68,9 +71,5 @@ class Interpreter {
   void loopGuard(std::size_t &iterations) const;
 
 public:
-  // How much C++ stack the running program may use before a call is refused.
-  void setStackBudget(std::size_t bytes) {
-    stackBudget = bytes;
-  }
   void run(const Program &program);
 };

@@ -9,16 +9,8 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <pthread.h>
 #include <sstream>
 #include <string>
-
-namespace {
-// The compiler runs on a thread with a large stack so that deeply recursive Plainspeak
-// programs get a clean "too many nested calls".
-constexpr std::size_t compilerStackSize = std::size_t{256} << 20;
-std::size_t interpreterStackBudget = std::size_t{4} << 20;
-} // namespace
 
 static std::string readFile(const std::string &path) {
   std::ifstream input(path);
@@ -48,7 +40,7 @@ static void printTokens(const std::vector<Token> &tokens) {
   std::cout << '\n';
 }
 
-static int compileAndRun(int argc, char **argv) {
+int main(int argc, char **argv) {
   if (argc < 2) {
     printUsage();
     return 1;
@@ -117,7 +109,6 @@ static int compileAndRun(int argc, char **argv) {
     }
 
     Interpreter interpreter;
-    interpreter.setStackBudget(interpreterStackBudget);
     running = true;
     interpreter.run(program);
   } catch (const CompileError &error) {
@@ -135,35 +126,4 @@ static int compileAndRun(int argc, char **argv) {
   }
 
   return 0;
-}
-
-namespace {
-struct MainArguments {
-  int argc;
-  char **argv;
-  int result;
-};
-
-void *compileAndRunThread(void *data) {
-  auto *arguments = static_cast<MainArguments *>(data);
-  arguments->result = compileAndRun(arguments->argc, arguments->argv);
-  return nullptr;
-}
-} // namespace
-
-int main(int argc, char **argv) {
-  MainArguments arguments{argc, argv, 1};
-  pthread_attr_t attributes;
-  pthread_t thread;
-  if (pthread_attr_init(&attributes) == 0 &&
-      pthread_attr_setstacksize(&attributes, compilerStackSize) == 0 &&
-      pthread_create(&thread, &attributes, compileAndRunThread, &arguments) == 0) {
-    pthread_attr_destroy(&attributes);
-    // Leave a generous margin below the thread's stack size.
-    interpreterStackBudget = compilerStackSize - (std::size_t{32} << 20);
-    pthread_join(thread, nullptr);
-    return arguments.result;
-  }
-  // Could not create the thread: run on the main thread with a conservative budget.
-  return compileAndRun(argc, argv);
 }

@@ -19,7 +19,6 @@ if(LLVM_CONFIG_EXECUTABLE)
 endif()
 # LLVM is optional: without it everything except --llvm-ir works.
 find_package(LLVM CONFIG QUIET)
-find_package(Threads REQUIRED)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,7 +39,15 @@ add_executable(customlang
 
 target_include_directories(customlang PRIVATE include)
 target_compile_options(customlang PRIVATE -Wall -Wextra -pedantic -O2)
-target_link_libraries(customlang PRIVATE Threads::Threads)
+# Windows gives the main thread only a 1-2 MB stack; reserve 16 MB so deep recursion
+# in a Plainspeak program is caught cleanly instead of crashing.
+if(WIN32)
+    if(MSVC)
+        target_link_options(customlang PRIVATE /STACK:16777216)
+    else()
+        target_link_options(customlang PRIVATE -Wl,--stack,16777216)
+    endif()
+endif()
 
 if(LLVM_FOUND)
     target_include_directories(customlang SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})
