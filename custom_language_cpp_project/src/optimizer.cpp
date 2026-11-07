@@ -297,11 +297,15 @@ void optimizeStatement(StmtPtr &statement) {
     optimizeBlock(branch->elseBlock.get());
     if (auto *literal = dynamic_cast<LiteralExpr *>(branch->condition.get());
         literal && literal->value.type == ValueType::Bool) {
+      // Move the chosen block out first: assigning straight from a member of the
+      // statement being replaced would read it after it has been destroyed.
+      std::unique_ptr<Stmt> chosen;
       if (literal->value.b) {
-        statement = std::move(branch->thenBlock);
+        chosen = std::move(branch->thenBlock);
       } else {
-        statement = std::move(branch->elseBlock);
+        chosen = std::move(branch->elseBlock);
       }
+      statement = std::move(chosen);
       if (!statement)
         statement = std::make_unique<BlockStmt>();
     }

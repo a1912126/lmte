@@ -1,8 +1,0 @@
-initialize x int
-set x to 7
-x = x / 2
-say x
-initialize y float
-set y to 7
-x = x / 2
-say y

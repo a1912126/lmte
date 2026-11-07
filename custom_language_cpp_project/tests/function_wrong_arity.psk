@@ -1,0 +1,2 @@
+define function double(integer n) returning integer { return n * 2 }
+say double(1, 2)

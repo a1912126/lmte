@@ -1,0 +1,3 @@
+initialize list values
+put 1 on values
+say item of values at 5

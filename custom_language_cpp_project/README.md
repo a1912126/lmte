@@ -18,15 +18,14 @@ three-address intermediate representation, or optimised LLVM IR.
 5. [Language overview](#5-language-overview)
 6. [Scope rules](#6-scope-rules)
 7. [Errors and exit codes](#7-errors-and-exit-codes)
-8. [Changes in this release](#8-changes-in-this-release)
-9. [Project structure](#9-project-structure)
+8. [Project structure](#8-project-structure)
 
 ## 1. Quick start
 
 ```bash
 cd custom_language_cpp_project
 make                       # builds ./customlang
-./customlang demo.psk      # runs a program
+./customlang demo.psk      # runs the demo (asks for your name and a number)
 ./test.sh                  # runs the test suite
 ```
 
@@ -37,7 +36,7 @@ Requirements:
 - a C++17 compiler (`clang++` or `g++`)
 - `make`, or CMake 3.16+
 - *optional:* the LLVM development libraries (`llvm-config`), needed only for the
-  `--llvm-ir` option
+  `--llvm-ir` option (see [Installing LLVM](#installing-llvm-optional))
 
 ```bash
 make clean && make
@@ -55,7 +54,7 @@ Other build options:
 
 | Command | Effect |
 |---|---|
-| `LLVM_CONFIG=/opt/homebrew/opt/llvm/bin/llvm-config make` | Use a specific LLVM install. |
+| `LLVM_CONFIG=/path/to/llvm-config make` | Use a specific LLVM install. |
 | `make NO_LLVM=1` | Build without LLVM even if it is installed. |
 | `make run` | Build, then run `demo.psk`. |
 | `make test` | Build, then run `./test.sh`. |
@@ -63,13 +62,6 @@ Other build options:
 After installing LLVM, or switching between LLVM and non-LLVM builds, run
 `make clean`. Header dependencies are tracked automatically, so editing a `.hpp`
 file rebuilds every source file that includes it.
-
-Install LLVM:
-
-```bash
-brew install llvm            # macOS (Homebrew)
-sudo apt install llvm-dev    # Ubuntu / Debian
-```
 
 With CMake:
 
@@ -79,8 +71,84 @@ cmake --build build
 ./build/customlang demo.psk
 ```
 
-Build outputs (`*.o`, `*.d`, `customlang`, `build/`).
+Build outputs (`*.o`, `*.d`, `customlang`, `build/`) are not committed.
 Always build the compiler on your own machine.
+
+### Installing LLVM (optional)
+
+LLVM is only needed for `--llvm-ir`. Install it, check that `llvm-config --version`
+prints a version, then run `make clean && make`.
+
+**macOS (Homebrew)**
+
+```bash
+brew install llvm
+```
+
+The Makefile finds Homebrew's LLVM automatically, even though it is not on your `PATH`.
+
+**Linux**
+
+```bash
+# Ubuntu / Debian
+sudo apt update
+sudo apt install build-essential llvm llvm-dev
+
+# Fedora
+sudo dnf install gcc-c++ make llvm-devel
+
+# Arch
+sudo pacman -S base-devel llvm
+```
+
+Some distributions only install a versioned name such as `llvm-config-18`. Point
+the Makefile at it with the full path:
+
+```bash
+LLVM_CONFIG=/usr/bin/llvm-config-18 make
+```
+
+If linking fails with a missing `-lz`, `-lzstd`, `-ltinfo` or `-lxml2`, install the
+matching development package (for example
+`sudo apt install zlib1g-dev libzstd-dev libtinfo-dev libxml2-dev`).
+
+**Windows**
+
+Use [MSYS2](https://www.msys2.org/). It provides `g++`, `make`, `bash` and an LLVM
+build that includes `llvm-config`. (The LLVM installer from llvm.org ships only the
+tools, not `llvm-config` and the development libraries.)
+
+1. Install MSYS2 from <https://www.msys2.org/>.
+2. Open the **MSYS2 UCRT64** terminal from the Start menu and run:
+
+   ```bash
+   pacman -Syu
+   pacman -S --needed make mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-llvm
+   ```
+
+3. In the same UCRT64 terminal, build and test as usual:
+
+   ```bash
+   cd /c/path/to/custom_language_cpp_project
+   llvm-config --version
+   make clean && make
+   ./customlang demo.psk
+   ./test.sh
+   ```
+
+To build on Windows without LLVM, install only `make` and `mingw-w64-ucrt-x86_64-gcc`.
+The Makefile then builds without `--llvm-ir` support. On Windows the program is
+built as `customlang.exe` with a 16 MB stack.
+
+### What LLVM is used for
+
+In this project as it currently works, LLVM is mainly useful for generating and
+inspecting optimized LLVM IR with `--llvm-ir`. It demonstrates how the supported
+part of Plainspeak could be translated for LLVM, and provides a starting point for
+a future native-code backend.
+
+It does not currently make your program run faster or create an executable: after
+printing the LLVM IR, `customlang` still runs the program using its interpreter.
 
 ## 3. Running a program
 
@@ -110,16 +178,21 @@ printf '23\n1.75\nAda Lovelace\ntrue\n' | ./customlang tests/input.psk
 ./test.sh
 ```
 
-The script rebuilds from scratch, then runs every program in `tests/`. Each
-program is checked in one of three ways:
+The script rebuilds from scratch, then runs `demo.psk`, the command-line checks
+and every program in `tests/`. The checks are grouped by feature (lexing and
+syntax, types and strings, input, control flow and functions, scope, classes,
+optimiser, LLVM). Each program is checked in one of three ways:
 
 - **Positive:** it must print an exact output.
-- **Negative:** it must be rejected with the expected error.
-- **Inspection:** its `--ir` or `--llvm-ir` output must contain what's expected.
+- **Negative:** it must be rejected with the expected exit code (1 = compile
+  error, 2 = run-time error) and error message.
+- **Inspection:** its `--tokens`, `--ir` or `--llvm-ir` output must contain what's expected.
 
 The script stops at the first failure and prints the expected and actual output.
-On success it prints `PASS: all tests`. If the build has no LLVM, the LLVM checks
-print `SKIP` instead of failing.
+It also fails if a program in `tests/` isn't used by any check. On success it
+prints `PASS: all N checks`. If the build has no LLVM, the LLVM checks print
+`SKIP` instead of failing. The last check (the infinite-loop guard) takes a few
+seconds.
 
 To check your own program, run `./customlang yourfile.psk`. To check that a
 mistake is caught, look for an `ERROR:` line and exit code 1 (`echo $?`).
@@ -264,14 +337,13 @@ Run-time errors stop the program. They are:
 - input that can't be converted to the target's type
 - a value-returning function that ends without `return`
 - more than 10,000,000 iterations of one loop: `possible infinite loop`
-- more than 10,000 nested calls: `too many nested calls`
+- calls nested too deeply (about 1,000 levels of recursion, at most 10,000): `too many nested calls`
 - a condition that isn't `true`/`false`, e.g. a list item used as an `if` condition
 
 If you ever see `ERROR: internal compiler error: ...`, that is a bug in the
 compiler, not in your program. Please report it.
 
-
-## 9. Project structure
+## 8. Project structure
 
 ```text
 custom_language_cpp_project/
@@ -286,8 +358,7 @@ custom_language_cpp_project/
 │   ├── interpreter.cpp   runs the AST
 │   └── main.cpp          command line, error reporting
 ├── tests/              test programs used by test.sh
-├── demo.psk, oop.psk, division.psk, example.psk   sample programs
-├── bad_type.psk, bad_uninit.psk                   deliberately invalid samples
+├── demo.psk            sample program covering the main features
 ├── Makefile, CMakeLists.txt
 ├── test.sh
 └── IMPLEMENTATION_GUIDE.md
