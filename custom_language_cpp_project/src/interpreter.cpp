@@ -14,12 +14,12 @@ struct ReturnSignal {
 struct BreakSignal {};
 struct ContinueSignal {};
 
-std::size_t maxLoopIterations = 10000000;
+constexpr std::size_t maxLoopIterations = 10000000;
 // Nested function/method/constructor calls allowed before reporting likely infinite recursion.
 #ifndef PLAINSPEAK_MAX_CALL_DEPTH
 #define PLAINSPEAK_MAX_CALL_DEPTH 10000
 #endif
-int maxCallDepth = PLAINSPEAK_MAX_CALL_DEPTH;
+constexpr int maxCallDepth = PLAINSPEAK_MAX_CALL_DEPTH;
 
 bool sameValue(const Value &left, const Value &right) {
   if (left.type != right.type) {

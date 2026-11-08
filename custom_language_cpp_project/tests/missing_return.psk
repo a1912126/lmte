@@ -1,0 +1,5 @@
+define function sign(integer n) returning integer {
+    if n > 0 { return 1 }
+}
+say sign(1)
+say sign(0)

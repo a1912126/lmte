@@ -1,9 +1,19 @@
-if (true) {
-    say (2 + 3) * 4
-} else {
-    say 99
+// Constant arithmetic is folded before the program runs.
+say (2 + 3) * 4
+say 17 mod 5
+
+// Constant strings and boolean expressions are folded too.
+say "optimizer " + "demo"
+say not false and true
+
+// The condition folds to true, so the other branch is removed.
+if (3 * 3 == 9) {
+    say "chosen branch"
+} otherwise {
+    say "unreachable branch"
 }
 
-while (false) {
-    say "unreachable"
+// This loop is removed because its condition folds to false.
+while (false and true) {
+    say "unreachable loop"
 }
