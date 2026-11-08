@@ -193,8 +193,17 @@ printf '23\n1.75\nAda Lovelace\ntrue\n' | ./customlang tests/input.psk
 
 ## 4. Testing
 
+Run the full test suite with:
+
 ```bash
 ./test.sh
+```
+
+To run the suite without LLVM installed (or force a build without LLVM even if
+it is installed), use:
+
+```bash
+NO_LLVM=1 ./test.sh
 ```
 
 The script rebuilds from scratch, then runs `demo.psk`, the command-line checks
