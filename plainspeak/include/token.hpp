@@ -24,7 +24,6 @@ enum class TokenType {
   RightBrace,
   Semicolon,
   Comma,
-  ShiftLeft,
   End
 };
 

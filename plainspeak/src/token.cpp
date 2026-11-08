@@ -44,8 +44,6 @@ std::string tokenName(TokenType t) {
     return ";";
   case TokenType::Comma:
     return ",";
-  case TokenType::ShiftLeft:
-    return "<<";
   case TokenType::End:
     return "end of file";
   }

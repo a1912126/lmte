@@ -24,13 +24,12 @@ class Parser {
 
   static bool isTypeWord(const std::string &word);
   static ValueType parseTypeWord(const std::string &word);
-  void optionalSemicolon();
 
   StmtPtr parseStatement();
   StmtPtr parseDeclaration(ValueType type);
   StmtPtr parseInitialize();
   StmtPtr parseSet();
-  StmtPtr parseOutput(bool coutSyntax);
+  StmtPtr parseOutput();
   StmtPtr parseInput();
   StmtPtr parseCompound(const std::string &op);
   std::unique_ptr<BlockStmt> parseBlock();

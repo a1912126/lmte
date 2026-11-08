@@ -149,13 +149,6 @@ std::vector<Token> Lexer::tokenize() {
       addToken(tokens, TokenType::GreaterEqual, ">=", p);
       continue;
     }
-    if (c == '<' && peek(1) == '<') {
-      advance();
-      advance();
-      addToken(tokens, TokenType::ShiftLeft, "<<", p);
-      continue;
-    }
-
     TokenType type;
     switch (c) {
     case '+':

@@ -14,8 +14,8 @@ ask "What is your name? " into visitor
 initialize integer wanted
 ask "How many pets would you like to meet? " into wanted
 say "Welcome to the shelter, " + visitor + "!"
-cout << "Pets you asked to meet:"
-cout << wanted
+say "Pets you asked to meet:"
+say wanted
 
 // ---------- Variables, types and constants ----------
 int capacity = 10

@@ -41,7 +41,6 @@ const std::unordered_set<std::string> &reservedWords() {
       "set",
       "say",
       "ask",
-      "cout",
       "add",
       "subtract",
       "multiply",
@@ -159,10 +158,6 @@ ValueType Parser::parseTypeWord(const std::string &s) {
   throw std::runtime_error("not a type");
 }
 
-void Parser::optionalSemicolon() {
-  match(TokenType::Semicolon);
-}
-
 StmtPtr Parser::parseStatement() {
   if (matchWord("int"))
     return parseDeclaration(ValueType::Int);
@@ -214,11 +209,9 @@ StmtPtr Parser::parseStatement() {
   if (matchWord("set"))
     return parseSet();
   if (matchWord("say"))
-    return parseOutput(false);
+    return parseOutput();
   if (matchWord("ask"))
     return parseInput();
-  if (matchWord("cout"))
-    return parseOutput(true);
   if (matchWord("add"))
     return parseCompound("add");
   if (matchWord("subtract"))
@@ -236,7 +229,6 @@ StmtPtr Parser::parseStatement() {
   if (matchWord("fix")) {
     auto node = std::make_unique<FixStmt>();
     node->name = consume(TokenType::Identifier, "expected variable name after 'fix'").text;
-    optionalSemicolon();
     return node;
   }
   if (matchWord("return"))
@@ -244,7 +236,6 @@ StmtPtr Parser::parseStatement() {
   if (matchWord("stop") || matchWord("skip")) {
     auto node = std::make_unique<LoopControlStmt>();
     node->isBreak = previous().text == "stop";
-    optionalSemicolon();
     return node;
   }
   if (matchWord("if"))
@@ -270,7 +261,6 @@ StmtPtr Parser::parseStatement() {
     ++current;
     if (match(TokenType::Assign)) {
       ExprPtr expr = parseExpression();
-      optionalSemicolon();
       return std::make_unique<AssignmentStmt>(name.text, std::move(expr));
     }
     errorAt(name, "expected assignment operator '=' after variable name");
@@ -285,7 +275,6 @@ StmtPtr Parser::parseDeclaration(ValueType type) {
   ExprPtr initializer;
   if (match(TokenType::Assign))
     initializer = parseExpression();
-  optionalSemicolon();
   return std::make_unique<DeclarationStmt>(type, name.text, std::move(initializer));
 }
 
@@ -294,14 +283,12 @@ StmtPtr Parser::parseInitialize() {
   if (isTypeWord(first.text)) {
     Token variable = consume(TokenType::Identifier, "expected variable name after type");
     requireName(variable, "variable");
-    optionalSemicolon();
     return std::make_unique<InitializeStmt>(variable.text, parseTypeWord(first.text));
   }
 
   Token second = consume(TokenType::Identifier, "expected variable type or instance name");
   if (isTypeWord(second.text)) {
     requireName(first, "variable");
-    optionalSemicolon();
     return std::make_unique<InitializeStmt>(first.text, parseTypeWord(second.text));
   }
   requireName(second, "variable");
@@ -316,10 +303,8 @@ StmtPtr Parser::parseInitialize() {
       } while (match(TokenType::Comma));
     }
     consume(TokenType::RightParen, "expected ')' after constructor arguments");
-    optionalSemicolon();
     return node;
   }
-  optionalSemicolon();
   auto node = std::make_unique<NamedInitializeStmt>();
   node->typeName = first.text;
   node->name = second.text;
@@ -363,8 +348,6 @@ StmtPtr Parser::parseClass(bool abstractClass) {
   }
   consume(TokenType::LeftBrace, "expected '{' after class declaration");
   while (!check(TokenType::RightBrace) && !isAtEnd()) {
-    if (match(TokenType::Semicolon))
-      continue;
     bool isPublic = false;
     bool abstractMethod = false;
     if (matchWord("public"))
@@ -424,11 +407,10 @@ StmtPtr Parser::parseFunction() {
 
 StmtPtr Parser::parseReturn() {
   auto result = std::make_unique<ReturnStmt>();
-  if (!check(TokenType::RightBrace) && !check(TokenType::Semicolon) && !isAtEnd() &&
+  if (!check(TokenType::RightBrace) && !isAtEnd() &&
       peek().pos.line == previous().pos.line) {
     result->expression = parseExpression();
   }
-  optionalSemicolon();
   return result;
 }
 
@@ -439,7 +421,6 @@ StmtPtr Parser::parseListMutation(bool remove) {
     auto result = std::make_unique<ListMutationStmt>();
     result->operation = ListMutationStmt::Operation::RemoveLast;
     result->name = consume(TokenType::Identifier, "expected list name").text;
-    optionalSemicolon();
     return result;
   }
   auto result = std::make_unique<ListMutationStmt>();
@@ -447,14 +428,12 @@ StmtPtr Parser::parseListMutation(bool remove) {
   result->value = parseExpression();
   consumeWord("on", "expected 'on' after value to append");
   result->name = consume(TokenType::Identifier, "expected list name after 'on'").text;
-  optionalSemicolon();
   return result;
 }
 
 StmtPtr Parser::parseExpressionStatement() {
   auto result = std::make_unique<ExpressionStmt>();
   result->expression = parseExpression();
-  optionalSemicolon();
   return result;
 }
 
@@ -465,15 +444,12 @@ StmtPtr Parser::parseStruct() {
   structure->name = name.text;
   consume(TokenType::LeftBrace, "expected '{' after struct name");
   while (!check(TokenType::RightBrace) && !isAtEnd()) {
-    if (match(TokenType::Semicolon))
-      continue;
     Token type = consume(TokenType::Identifier, "expected struct field type");
     if (!isTypeWord(type.text))
       errorAt(type, "unsupported struct field type '" + type.text + "'");
     Token field = consume(TokenType::Identifier, "expected struct field name");
     requireName(field, "field");
     structure->fields.push_back({parseTypeWord(type.text), field.text, true});
-    optionalSemicolon();
   }
   consume(TokenType::RightBrace, "expected '}' after struct fields");
   return structure;
@@ -486,7 +462,7 @@ StmtPtr Parser::parseEnum() {
   enumeration->name = name.text;
   consume(TokenType::LeftBrace, "expected '{' after enum name");
   while (!check(TokenType::RightBrace) && !isAtEnd()) {
-    if (match(TokenType::Comma) || match(TokenType::Semicolon))
+    if (match(TokenType::Comma))
       continue;
     const Token &member = consume(TokenType::Identifier, "expected enum member name");
     requireName(member, "enum member");
@@ -506,7 +482,6 @@ StmtPtr Parser::parseClassMember(ClassStmt &klass, bool isPublic, bool abstractM
     Token field = consume(TokenType::Identifier, "expected field name");
     requireName(field, "field");
     klass.fields.push_back({parseTypeWord(type.text), field.text, isPublic});
-    optionalSemicolon();
     return nullptr;
   }
 
@@ -541,9 +516,7 @@ StmtPtr Parser::parseClassMember(ClassStmt &klass, bool isPublic, bool abstractM
     } else {
       errorAt(returnType, "unsupported method return type '" + returnType.text + "'");
     }
-    if (method.isAbstract) {
-      optionalSemicolon();
-    } else {
+    if (!method.isAbstract) {
       method.body = parseBlock();
     }
     klass.methods.push_back(std::move(method));
@@ -565,7 +538,6 @@ StmtPtr Parser::parseMethodCall() {
   consume(TokenType::RightParen, "expected ')' after method arguments");
   consumeWord("from", "expected 'from' after method call");
   Token object = consume(TokenType::Identifier, "expected object name after 'from'");
-  optionalSemicolon();
   auto node = std::make_unique<MethodCallStmt>();
   node->method = method.text;
   node->objectName = object.text;
@@ -578,7 +550,6 @@ StmtPtr Parser::parseSuperConstructorCall() {
   consume(TokenType::LeftParen, "expected '(' after 'super'");
   node->arguments = parseArguments();
   consume(TokenType::RightParen, "expected ')' after super arguments");
-  optionalSemicolon();
   return node;
 }
 
@@ -591,20 +562,15 @@ StmtPtr Parser::parseSet() {
     node->field = name.text;
     node->objectName = object.text;
     node->expr = parseExpression();
-    optionalSemicolon();
     return node;
   }
   consumeWord("to", "expected keyword 'to'");
   ExprPtr expr = parseExpression();
-  optionalSemicolon();
   return std::make_unique<AssignmentStmt>(name.text, std::move(expr));
 }
 
-StmtPtr Parser::parseOutput(bool coutSyntax) {
-  if (coutSyntax)
-    consume(TokenType::ShiftLeft, "expected '<<' after 'cout'");
+StmtPtr Parser::parseOutput() {
   ExprPtr expr = parseExpression();
-  optionalSemicolon();
   return std::make_unique<OutputStmt>(std::move(expr));
 }
 
@@ -612,7 +578,6 @@ StmtPtr Parser::parseInput() {
   ExprPtr prompt = parseExpression();
   consumeWord("into", "expected 'into' after input prompt");
   Token name = consume(TokenType::Identifier, "expected target variable after 'into'");
-  optionalSemicolon();
   auto node = std::make_unique<InputStmt>();
   node->prompt = std::move(prompt);
   node->name = name.text;
@@ -625,7 +590,6 @@ StmtPtr Parser::parseCompound(const std::string &op) {
         consume(TokenType::Identifier, "expected target variable after arithmetic command");
     consumeWord("by", "expected keyword 'by'");
     ExprPtr amount = parseExpression();
-    optionalSemicolon();
     return std::make_unique<AddToStmt>(op, std::move(amount), name.text);
   }
 
@@ -634,7 +598,6 @@ StmtPtr Parser::parseCompound(const std::string &op) {
     Token name = tokens[current++];
     consumeWord("by", "expected keyword 'by'");
     ExprPtr amount = parseExpression();
-    optionalSemicolon();
     return std::make_unique<AddToStmt>(op, std::move(amount), name.text);
   }
 
@@ -646,7 +609,6 @@ StmtPtr Parser::parseCompound(const std::string &op) {
   else
     consumeWord("from", "expected keyword 'from'");
   Token name = consume(TokenType::Identifier, "expected target variable");
-  optionalSemicolon();
   return std::make_unique<AddToStmt>(op, std::move(amount), name.text);
 }
 
@@ -654,8 +616,6 @@ std::unique_ptr<BlockStmt> Parser::parseBlock() {
   consume(TokenType::LeftBrace, "expected '{'");
   auto block = std::make_unique<BlockStmt>();
   while (!check(TokenType::RightBrace) && !isAtEnd()) {
-    if (match(TokenType::Semicolon))
-      continue;
     block->statements.push_back(parseStatement());
   }
   consume(TokenType::RightBrace, "expected '}'");
@@ -816,10 +776,10 @@ StmtPtr Parser::parseFor() {
     Token name = consume(TokenType::Identifier, "expected for-loop initialization");
     consume(TokenType::Assign, "expected '=' in for-loop initialization");
     ExprPtr expr = parseExpression();
-    consume(TokenType::Semicolon, "expected ';' after for-loop initialization");
     init = std::make_unique<AssignmentStmt>(name.text, std::move(expr));
   }
 
+  consume(TokenType::Semicolon, "expected ';' after for-loop initialization");
   ExprPtr condition = parseExpression();
   consume(TokenType::Semicolon, "expected ';' after for-loop condition");
 
@@ -998,8 +958,6 @@ std::vector<ExprPtr> Parser::parseArguments() {
 Program Parser::parseProgram() {
   Program program;
   while (!isAtEnd()) {
-    if (match(TokenType::Semicolon))
-      continue;
     program.push_back(parseStatement());
   }
   return program;

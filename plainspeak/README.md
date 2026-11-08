@@ -1,13 +1,14 @@
 # Plainspeak compiler and interpreter (C++)
 
 Plainspeak is a small, English-like programming language. This project checks a
-Plainspeak program (`.psk` file) completely at compile time, then runs it in a
-tree-walking interpreter. It can also print the program's tokens, a
-three-address intermediate representation, or optimised LLVM IR.
+Plainspeak program (`.psk` file) before running it in a tree-walking
+interpreter. It can also print the program's tokens, a three-address
+intermediate representation, or (optionally) optimised LLVM IR.
 
-- **Language reference:** the *Plainspeak User Guide* (LMTE Assignment 2b) is the
-  specification.
-- **How each compiler stage works:** [IMPLEMENTATION_GUIDE.md](./IMPLEMENTATION_GUIDE.md).
+- **Language and implementation guide:** [IMPLEMENTATION_GUIDE.md](./IMPLEMENTATION_GUIDE.md)
+  documents the implemented syntax, semantics, stages, limitations, and LLVM
+  subset. The examples and rules in this README are a quick start, not a
+  complete grammar.
 
 ## Contents
 
@@ -16,18 +17,45 @@ three-address intermediate representation, or optimised LLVM IR.
 3. [Running a program](#3-running-a-program)
 4. [Testing](#4-testing)
 5. [Language overview](#5-language-overview)
-6. [Scope rules](#6-scope-rules)
-7. [Errors and exit codes](#7-errors-and-exit-codes)
-8. [Project structure](#8-project-structure)
+6. [Execution flow and key features](#6-execution-flow-and-key-features)
+7. [Scope rules](#7-scope-rules)
+8. [Errors and exit codes](#8-errors-and-exit-codes)
+9. [Project structure](#9-project-structure)
+10. [Optional LLVM IR output](#10-optional-llvm-ir-output)
 
 ## 1. Quick start
 
 ```bash
 cd custom_language_cpp_project
-make                       # builds ./customlang
-./customlang demo.psk      # runs the demo (asks for your name and a number)
-./test.sh                  # runs the test suite
+make                         # compile the interpreter to ./customlang
+./customlang demo.psk        # run the interactive demo
+./test.sh                    # rebuild and run all checks
 ```
+
+To try a small program, save this as `hello.psk` in the project directory:
+
+```text
+initialize int score
+set score to 5
+say score
+```
+
+Then compile and run it:
+
+```bash
+make
+./customlang hello.psk
+```
+
+Expected output:
+
+```text
+5
+```
+
+`make` requires a C++17 compiler and GNU Make. The test script also requires
+Bash. LLVM is optional; it is not needed to compile or run ordinary Plainspeak
+programs.
 
 ## 2. Building
 
@@ -45,7 +73,8 @@ make clean && make
 The Makefile looks for `llvm-config` on your `PATH` and through
 `brew --prefix llvm`:
 
-- **LLVM found:** the full compiler is built.
+- **LLVM found:** an LLVM-enabled build is produced, which adds the optional
+  `--llvm-ir` inspection path.
 - **LLVM not found:** you'll see the note
   `LLVM not found - building without --llvm-ir support`. Everything works except
   `--llvm-ir`, which then reports that it is unavailable.
@@ -140,16 +169,6 @@ To build on Windows without LLVM, install only `make` and `mingw-w64-ucrt-x86_64
 The Makefile then builds without `--llvm-ir` support. On Windows the program is
 built as `customlang.exe` with a 16 MB stack.
 
-### What LLVM is used for
-
-In this project as it currently works, LLVM is mainly useful for generating and
-inspecting optimized LLVM IR with `--llvm-ir`. It demonstrates how the supported
-part of Plainspeak could be translated for LLVM, and provides a starting point for
-a future native-code backend.
-
-It does not currently make your program run faster or create an executable: after
-printing the LLVM IR, `customlang` still runs the program using its interpreter.
-
 ## 3. Running a program
 
 ```bash
@@ -161,7 +180,7 @@ printing the LLVM IR, `customlang` still runs the program using its interpreter.
 | *(none)* | Check the program, then run it. |
 | `--tokens` | Print every token with its `line:column`, then run. |
 | `--ir` | Print the optimised three-address IR, then run. |
-| `--llvm-ir` | Print LLVM IR after LLVM's O2 pipeline, then run. Supports only scalar variables, arithmetic, comparisons, `say`, `if` and loops. |
+| `--llvm-ir` | Optionally print optimized LLVM IR for a limited subset, then run the program in the interpreter. It does not emit or execute machine code. See [Optional LLVM IR output](#10-optional-llvm-ir-output). |
 
 The program is tokenised, parsed, semantically checked and optimised first. If
 any check fails, nothing runs.
@@ -199,18 +218,24 @@ mistake is caught, look for an `ERROR:` line and exit code 1 (`echo $?`).
 
 ## 5. Language overview
 
-The User Guide is the full reference. This section is a quick reminder.
+This section is a quick reminder; see [IMPLEMENTATION_GUIDE.md](./IMPLEMENTATION_GUIDE.md)
+for implementation details and documented limitations. The following block
+collects syntax examples; it is illustrative rather than a single program to
+run as-is. The `set` form puts the variable name before `to`. Statements do
+not end in semicolons; semicolons are only used as separators in C-style
+`for` loop headers.
 
 ```text
 // Comments start with //
-initialize int a;
-set 5 to a                    // declare and assign (int, integer, float, string, bool)
+initialize int score
+set score to 5                 // assign to an existing variable
 initialize string name            // declare with a default value
 set score to score + 5            // assign (also: score = score + 5)
 
-fix limit                         // make a variable constant
+initialize int limit
+fix limit                         // make an existing variable constant
 
-say "Hello " + name               // print (also: cout << x)
+say "Hello " + name               // print joined strings
 ask "Your name? " into name       // read a line into a declared variable
 
 add 5 to score                    // also: subtract 5 from x, multiply 2 to x,
@@ -238,8 +263,9 @@ put 10 on values
 say item of values at 0
 say length of values
 say top of values
-for each v in values { say v }     
-stop /skip.    // break / continue work in every loop
+for each v in values { say v }
+repeat 3 times { skip }           // skip continues to the next iteration
+repeat 3 times { stop }           // stop exits the loop
 remove item of values
 
 define function double(integer n) returning integer {
@@ -267,24 +293,92 @@ say name of pike
 
 Rules worth remembering:
 
-- **Strict strings.** A string variable can only be given a quoted literal or another string variable. `string s = "a" + "b"` and `string s = name()` are rejected. Joined strings can still be printed.
-- **Strict types.** Types must match. An int may go into a float, never the reverse; this also applies to `add`/`subtract`/... commands. Conditions must be `true`/`false` values.
+- **String assignments.** A statically known string variable can be assigned a
+  quoted string literal or another string variable. Expressions such as
+  `"a" + "b"` and function calls are not accepted as direct string
+  initializers/assignments, although string concatenation can be printed. A
+  value of dynamic type `Any` (for example, a list item) is accepted by static
+  analysis and checked against the string type at runtime.
+- **Types.** Assignments require compatible types. An int may go into a float,
+  never the reverse; this also applies to `add`/`subtract`/... commands. Values
+  from dynamic list operations may be checked at runtime. Conditions must be
+  `true`/`false` values.
+- **Expression order.** Parentheses and function/list expressions bind
+  tightest, followed by unary `+`, `-`, and `not`; then `*`, `/`, and `mod`;
+  then `+` and `-`; comparisons (`<`, `<=`, `>`, `>=`); equality (`==`, `!=`);
+  `and`; and finally `or`. Binary operators at the same level group left to
+  right: `20 / 5 * 2` means `(20 / 5) * 2`, while `2 + 3 * 4` means
+  `2 + (3 * 4)`. Use parentheses to make grouping explicit.
 - **Object variables.** An object variable can only hold an object of its own class or a subclass.
 - **Constructors.**
   - A class with no constructor uses its parent's.
   - A constructor can call the parent constructor with `super(...)` as its first statement.
   - Without `super`, the parent's no-argument constructor runs automatically first.
   - If the parent constructor needs arguments, `super(...)` is required.
-- **Methods.** Methods can use the object's fields, including list fields (`put 1 on items`), but can't call another method of the same object.
-- **Reserved words.** Keywords can't be used as names. These are:
-  - types and values: `int`, `integer`, `float`, `string`, `bool` `list`, `nothing`, `true`, `false`
+- **Methods.** Methods can use the object's fields, including list fields (`put 1 on items`). Method calls use `call method(...) from object`; direct calls to another method from inside a method body are not implemented. Class methods must return `nothing`.
+- **Reserved words.** Names in the following case-sensitive set cannot be used as variable, parameter, field, function, method, type, or enum-member names:
+  - types and values: `int`, `integer`, `float`, `string`, `bool`, `list`, `nothing`, `true`, `false`
   - operators: `and`, `or`, `not`, `mod`, `is`, `of`
-  - every statement keyword (`say`, `set`, `if`, `while`, `define`, …)
+  - statement words: `initialize`, `Initialize`, `define`, `Define`, `abstract`, `class`, `struct`, `enum`, `function`, `call`, `super`, `set`, `say`, `ask`, `add`, `subtract`, `multiply`, `divide`, `put`, `remove`, `fix`, `return`, `stop`, `skip`, `if`, `else`, `otherwise`, `check`, `when`, `while`, `repeat`, `for`, `each`
   - list words: `item`, `length`, `top`
   - class words: `public`, `private`, `inherits`, `constructor`, `returning`
+
+  Some words used in grammar positions (such as `to`, `into`, `with`, `from`,
+  `on`, `by`, and `in`) are recognized contextually and are not in this
+  reserved-name set.
 - **List indexes.** `item of l at i + 1` uses `i + 1` as the index. A comparison after it applies to the item: `item of l at 0 > 5` compares the item with 5.
 
-## 6. Scope rules
+## 6. Execution flow and key features
+
+### From source file to program output
+
+The normal execution path is an interpreter, not a native-code compiler:
+
+1. `customlang` reads the `.psk` source file.
+2. The lexer converts characters to tokens.
+3. The recursive-descent parser converts tokens to an abstract syntax tree
+   (AST).
+4. Semantic analysis checks declarations, types, scopes, and other rules. If
+   compilation fails at this stage, the program is not run.
+5. The optimizer folds supported constant expressions and simplifies selected
+   branches and loops.
+6. The tree-walking interpreter executes the optimized AST and writes the
+   Plainspeak program's output.
+
+
+The AST interpreter is what produces the program's output. `--tokens` and
+`--ir` add diagnostic/inspection text before interpretation; the optional
+LLVM path is described last below.
+
+### Object-oriented programming
+
+Plainspeak implements the four commonly named OOP pillars:
+
+- **Encapsulation:** class fields and methods can be marked `public` or
+  `private`; semantic analysis checks access.
+- **Abstraction:** abstract classes and abstract methods describe required
+  behavior; a concrete subclass must implement inherited abstract methods.
+- **Inheritance:** classes support single inheritance, inherited fields and
+  constructors, and explicit `super(...)` constructor calls.
+- **Polymorphism:** methods can be overridden, and calls on an object resolve
+  dynamically through its runtime class hierarchy.
+
+Class methods currently return `nothing`; methods with value return types and
+generic methods are not supported.
+
+### Generic functions and dynamic memory
+
+Top-level functions support inferred generic type parameters, for example
+`define function identity<T>(T value) returning T`. The compiler infers `T`
+from call arguments. Generic classes, methods, constraints, and explicit type
+arguments are not supported.
+
+Runtime objects and lists are dynamically allocated and shared using C++'s
+`std::shared_ptr`. This is reference counting, not a tracing garbage collector:
+acyclic values are released when no longer referenced, but cycles of objects
+and lists may remain allocated.
+
+## 7. Scope rules
 
 - **Globals.** The top level of the file is the global scope.
 - **Functions.**
@@ -303,7 +397,7 @@ Rules worth remembering:
   - Inside a class, a parameter or local variable can't share a name with a field.
 - **Classes.** Constructors and methods see their parameters, their own variables and the class's fields. They reach globals through functions.
 
-## 7. Errors and exit codes
+## 8. Errors and exit codes
 
 Errors are printed on standard error.
 
@@ -336,14 +430,14 @@ Run-time errors stop the program. They are:
 - list index out of range, or removing from an empty list
 - input that can't be converted to the target's type
 - a value-returning function that ends without `return`
-- more than 10,000,000 iterations of one loop: `possible infinite loop`
-- calls nested too deeply (about 1,000 levels of recursion, at most 10,000): `too many nested calls`
+- more than 10,000,000 iterations of one loop (including `for` loops): `possible infinite loop`
+- calls nested too deeply (at most 10,000 calls, with a separate stack-size guard): `too many nested calls`
 - a condition that isn't `true`/`false`, e.g. a list item used as an `if` condition
 
 If you ever see `ERROR: internal compiler error: ...`, that is a bug in the
 compiler, not in your program. Please report it.
 
-## 8. Project structure
+## 9. Project structure
 
 ```text
 custom_language_cpp_project/
@@ -370,3 +464,25 @@ Pipeline:
 source -> lexer -> parser (AST) -> semantic analysis -> AST optimizer
        -> [--ir output] [--llvm-ir output] -> interpreter
 ```
+
+## 10. Optional LLVM IR output
+
+LLVM support is optional and is not part of the normal interpreter execution
+path. If LLVM development libraries are available at build time,
+`--llvm-ir` lowers a limited subset of the optimized AST to LLVM IR and runs
+LLVM's O2 optimization pipeline. The driver prints that IR, then still runs
+the program with the AST interpreter.
+
+This project does **not** currently invoke LLVM's target code generator,
+produce a native executable, or run the LLVM output. The LLVM path does not
+contribute to the program output. It is an inspection/demo backend only.
+Without LLVM, all ordinary interpreter features still work; only `--llvm-ir`
+is unavailable.
+
+The backend supports a narrower subset than the interpreter: scalar integer,
+float, boolean, and string variables; arithmetic and comparisons supported by
+the backend; output; and supported conditionals and loops. It does not support
+string concatenation or string comparisons, input, functions, lists, structs,
+enums, objects/classes, `check`, logical operators, or modulo. A program that
+passes normal semantic analysis may still use a feature rejected by the LLVM
+backend.

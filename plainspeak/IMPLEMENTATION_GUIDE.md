@@ -45,7 +45,7 @@ the program still executes using the AST interpreter.
 
 | Stage | Method |
 |---|---|
-| Lexing | Hand-written, deterministic character scanner. It recognizes token patterns with lookahead and scanning loops;|
+| Lexing | Hand-written, deterministic character scanner. It recognizes token patterns with lookahead and scanning loops. |
 | Parsing | Recursive-descent parser. Parser functions consume tokens and build the AST; recursive calls handle nested constructs and separate expression functions encode operator precedence. |
 | Semantic analysis | Recursive AST traversal with scoped symbol/type information. It validates declarations, expressions, and statements before execution. |
 | AST optimization | Recursive AST rewriting with constant-expression evaluation and selected branch/loop simplifications. |
@@ -94,7 +94,8 @@ need a stack to recognize tokens.
   can occur inside the scanned string. Unterminated strings are compile errors.
 - **Operators and punctuation:** arithmetic (`+`, `-`, `*`, `/`), assignment
   (`=`), comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`), increment (`++`),
-  parentheses, braces, commas, semicolons, and `<<`.
+  parentheses, braces, commas, and semicolons used only as C-style `for` loop
+  header separators.
 - **Comments:** `//` starts a comment that continues to the end of the line.
 - **Whitespace:** skipped while line and column positions are updated.
 - **End token:** an explicit end-of-input token terminates parsing.
@@ -114,7 +115,11 @@ by separate AST hierarchies. Nodes own their child nodes through
 
 The parser handles both conventional forms and selected English-style
 commands, for example `x = x + 1`, `set x to x + 1`, and `add 1 to x`.
-Semicolons are generally optional.
+
+The `set` command takes the variable name first: `set score to 5`. It does not
+use the reversed form `set 5 to score`. Statements do not end with semicolons;
+the only semicolons in Plainspeak source are the two separators inside a
+C-style `for` loop header.
 
 ### Expression precedence and evaluation order
 
@@ -133,7 +138,7 @@ loosest:
 
 Operators at the same binary precedence level are grouped left to right. Thus
 `20 / 5 * 2` groups as `(20 / 5) * 2`, while `2 + 3 * 4` groups as
-`2 + (3 * 4)`. Parentheses can override the standard grouping. 
+`2 + (3 * 4)`. Parentheses can override the standard grouping.
 ### Statements and declarations
 
 The AST represents declarations, initialization, assignments, output, input,
@@ -302,8 +307,8 @@ list raises a runtime error.
 
 The interpreter checks operations that depend on runtime values, including
 division/modulo by zero, list bounds/emptiness, failed conversions, invalid
-input, and unresolved variables or fields. While/repeat/"for each" execution has
-a high iteration guard to report possible infinite loops.
+input, and unresolved variables or fields. `while`, `repeat`, C-style `for`,
+and `for each` loops have an iteration guard to report possible infinite loops.
 
 ## 8. Object-oriented features
 
@@ -325,28 +330,16 @@ interpreter allocates an object, initializes inherited and declared fields,
 runs constructors, and resolves a method starting at the runtime class before
 walking base classes.
 
+These features correspond to the four common OOP pillars: encapsulation through
+public/private access checks, abstraction through abstract classes and methods,
+inheritance through single-base classes, and polymorphism through overriding
+and runtime method dispatch. Class methods currently must return `nothing`;
+value-returning and generic methods are not implemented.
+
 Structs provide typed fields with default initialization but do not have class
 inheritance or methods. Enums define named members with integer indices.
 
-## 9. LLVM backend and compilation boundary
-
-`src/llvm_backend.cpp` builds LLVM IR for a narrower subset than the
-interpreter. The implemented path covers scalar integer, float, boolean, and
-string values; arithmetic and comparisons; output; and supported conditional
-and loop forms. It verifies the LLVM module before running O2.
-
-The LLVM backend reports unsupported constructs explicitly. Current
-unsupported areas include classes/objects, structs, enums, input, functions
-(including generic functions), lists, `check`, logical operators, modulo, and
-string concatenation. The exact accepted subset is governed by backend
-lowering; passing semantic analysis does not imply LLVM support.
-
-The backend returns optimized LLVM IR as text. It does not invoke a target
-code generator, linker, or JIT in the current driver. Therefore the project
-currently has an LLVM IR generation/optimization path, not a full native
-machine-code output path.
-
-## 10. Current scope at a glance
+## 9. Current scope at a glance
 
 | Area | Current implementation |
 |---|---|
@@ -358,3 +351,22 @@ machine-code output path.
 | Object orientation | Classes, encapsulation, single inheritance, constructors, abstract methods, overriding, dynamic dispatch |
 | Generics | Inferred type parameters on top-level functions |
 | Dynamic allocation | C++ `shared_ptr` objects and vector-backed lists |
+
+## 10. Optional LLVM IR backend
+
+`src/llvm_backend.cpp` builds LLVM IR for a narrower subset than the
+interpreter. The implemented path covers scalar integer, float, boolean, and
+string values; supported arithmetic and comparisons; output; and supported
+conditional and loop forms. It verifies the LLVM module before running O2.
+
+The LLVM backend reports unsupported constructs explicitly. Current
+unsupported areas include classes/objects, structs, enums, input, functions
+(including generic functions), lists, `check`, logical operators, modulo, and
+string concatenation or comparisons. Passing semantic analysis does not imply
+that a program is supported by this backend.
+
+This path is optional and is for IR inspection only. It prints optimized LLVM
+IR, but does not invoke a target code generator, linker, or JIT; it does not
+produce or execute machine code and does not contribute to the program's
+output. After printing the IR, the driver still executes the program with the
+AST interpreter.
