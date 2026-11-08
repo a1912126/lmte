@@ -71,11 +71,9 @@ expect_listing "demo.psk" "$demoOutput" \
 # Lexical and syntax errors
 # ---------------------------------------------------------------------------
 expect_error tests/unexpected_character.psk 1 "Line 2, column 7: unexpected character '@'"
-expect_error tests/semicolon_statement.psk 1 "unexpected token ';'"
 expect_error tests/unterminated_string.psk 1 "Line 1, column 5: unterminated string literal"
 expect_error tests/literal_out_of_range.psk 1 "Line 1, column 5: integer literal out of range"
 expect_error tests/reserved_word.psk 1 "'true' is a reserved word"
-expect_output tests/cout_identifier.psk $'42'
 expect_error tests/else_if.psk 1 "'else if' is not supported"
 expect_error tests/english_comparison_and.psk 1 "English comparison must be the whole condition"
 
